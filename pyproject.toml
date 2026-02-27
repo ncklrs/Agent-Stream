@@ -4,17 +4,38 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentstream"
-version = "1.0.0"
+dynamic = ["version"]
 description = "TUI for streaming and viewing Claude and Codex agent events"
 requires-python = ">=3.10"
 license = "MIT"
 readme = "README.md"
+keywords = ["tui", "agent", "claude", "codex", "streaming", "terminal"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: User Interfaces",
+]
 dependencies = [
     "textual>=0.40",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ncklrs/Agent-Stream"
+Repository = "https://github.com/ncklrs/Agent-Stream"
+Issues = "https://github.com/ncklrs/Agent-Stream/issues"
+
 [project.scripts]
 agentstream = "agentstream.__main__:main"
+
+[tool.hatch.version]
+path = "agentstream/__init__.py"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

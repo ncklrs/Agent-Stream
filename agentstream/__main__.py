@@ -24,6 +24,8 @@ Usage:
 import argparse
 import sys
 
+from agentstream import __version__
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -62,7 +64,7 @@ keyboard:
         help="Run a command and stream its JSON output. AGENT is claude|codex|auto",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 1.0.0",
+        "--version", action="version", version=f"%(prog)s {__version__}",
     )
 
     args = parser.parse_args()
@@ -96,7 +98,7 @@ keyboard:
         app.run()
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
-        print("Install with: pip install -e .", file=sys.stderr)
+        print("Install with: pip install git+https://github.com/ncklrs/Agent-Stream.git", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         pass

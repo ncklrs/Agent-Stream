@@ -9,10 +9,16 @@ A terminal UI that streams and visualizes agent events from **Claude Code** and 
 ## Install
 
 ```bash
-pip install -e .
+pip install git+https://github.com/ncklrs/Agent-Stream.git
 ```
 
-Requires Python 3.10+.
+Or with [pipx](https://pipx.pypa.io/) (recommended for CLI tools):
+
+```bash
+pipx install git+https://github.com/ncklrs/Agent-Stream.git
+```
+
+Requires Python 3.10+. For development, clone the repo and run `pip install -e .`
 
 ## Usage
 
