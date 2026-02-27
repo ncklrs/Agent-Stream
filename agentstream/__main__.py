@@ -98,7 +98,7 @@ keyboard:
         app.run()
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
-        print("Install with: pip install git+https://github.com/ncklrs/Agent-Stream.git", file=sys.stderr)
+        print("Install with: uv tool install git+https://github.com/ncklrs/Agent-Stream.git", file=sys.stderr)
         sys.exit(1)
     except KeyboardInterrupt:
         pass

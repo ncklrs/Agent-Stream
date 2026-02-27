@@ -9,16 +9,18 @@ A terminal UI that streams and visualizes agent events from **Claude Code** and 
 ## Install
 
 ```bash
-pip install git+https://github.com/ncklrs/Agent-Stream.git
+uv tool install git+https://github.com/ncklrs/Agent-Stream.git
 ```
 
-Or with [pipx](https://pipx.pypa.io/) (recommended for CLI tools):
+Or with [pipx](https://pipx.pypa.io/):
 
 ```bash
 pipx install git+https://github.com/ncklrs/Agent-Stream.git
 ```
 
-Requires Python 3.10+. For development, clone the repo and run `pip install -e .`
+Requires Python 3.10+. Install [uv](https://docs.astral.sh/uv/) with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+For development: `git clone` then `uv pip install -e .`
 
 ## Usage
 
