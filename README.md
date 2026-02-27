@@ -6,6 +6,8 @@
 
 A terminal UI that streams and visualizes agent events from **Claude Code** and **OpenAI Codex** in a single unified view.
 
+![AgentStream watching a Codex session](assets/agent_stream_codex_git_commands.png)
+
 ## Install
 
 ```bash
