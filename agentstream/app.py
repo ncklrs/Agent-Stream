@@ -49,7 +49,7 @@ class SessionToggle(Static):
     }
     """
 
-    visible = reactive(True)
+    enabled = reactive(True)
     event_count = reactive(0)
 
     def __init__(self, session_id: str, agent: Agent, display_name: str) -> None:
@@ -60,8 +60,8 @@ class SessionToggle(Static):
 
     def render(self) -> Text:
         primary, dim = AGENT_COLORS.get(self.agent, (SYSTEM_DIM, SYSTEM_DIM))
-        icon = "●" if self.visible else "○"
-        style = f"bold {primary}" if self.visible else f"dim {dim}"
+        icon = "●" if self.enabled else "○"
+        style = f"bold {primary}" if self.enabled else f"dim {dim}"
 
         t = Text()
         t.append(f" {icon} ", style=style)
@@ -71,8 +71,8 @@ class SessionToggle(Static):
         return t
 
     def on_click(self) -> None:
-        self.visible = not self.visible
-        self.post_message(SessionToggled(self.session_id, self.visible))
+        self.enabled = not self.enabled
+        self.post_message(SessionToggled(self.session_id, self.enabled))
 
 
 # ---------------------------------------------------------------------------
@@ -440,6 +440,9 @@ class AgentStreamApp(App):
         log = self.query_one("#stream-log", RichLog)
         log.clear()
         self.event_count = 0
+        self._claude_count = 0
+        self._codex_count = 0
+        self._total_cost = 0.0
         self._last_action = None
         for line in render_logo():
             log.write(line)
@@ -453,7 +456,7 @@ class AgentStreamApp(App):
         # Also update all Claude session toggles in sidebar
         for toggle in self.query_one(Sidebar).query(SessionToggle):
             if toggle.agent == Agent.CLAUDE:
-                toggle.visible = self.show_claude
+                toggle.enabled = self.show_claude
                 self._sessions[toggle.session_id].visible = self.show_claude
         self._update_status()
 
@@ -461,7 +464,7 @@ class AgentStreamApp(App):
         self.show_codex = not self.show_codex
         for toggle in self.query_one(Sidebar).query(SessionToggle):
             if toggle.agent == Agent.CODEX:
-                toggle.visible = self.show_codex
+                toggle.enabled = self.show_codex
                 self._sessions[toggle.session_id].visible = self.show_codex
         self._update_status()
 
@@ -471,3 +474,5 @@ class AgentStreamApp(App):
     async def on_unmount(self) -> None:
         for task in self._tasks:
             task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)

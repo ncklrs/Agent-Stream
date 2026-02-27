@@ -134,6 +134,8 @@ async def stdin_stream(agent_type: str) -> AsyncGenerator[AgentEvent, None]:
             event = parser.parse_line(line)
             if event:
                 yield event
+    except asyncio.CancelledError:
+        return
     except Exception as e:
         yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"stdin error: {e}")
 
@@ -161,18 +163,34 @@ async def file_stream(agent_type: str, path: str) -> AsyncGenerator[AgentEvent, 
                 event = parser.parse_line(line)
                 if event:
                     yield event
+    except asyncio.CancelledError:
+        return
     except FileNotFoundError:
         yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"File not found: {path}")
     except Exception as e:
         yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"File error: {e}")
+
+    yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_END, f"Stopped watching {path}")
 
 
 # ---------------------------------------------------------------------------
 # Subprocess exec stream
 # ---------------------------------------------------------------------------
 
+async def _drain_stderr(proc: asyncio.subprocess.Process) -> str:
+    """Read stderr in background to prevent pipe deadlocks."""
+    if proc.stderr:
+        data = await proc.stderr.read()
+        return data.decode(errors="replace").strip()
+    return ""
+
+
 async def exec_stream(agent_type: str, cmd: str) -> AsyncGenerator[AgentEvent, None]:
     """Run a command as subprocess and yield events from its stdout."""
+    if not cmd or not cmd.strip():
+        yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, "Empty command")
+        return
+
     parser = create_parser(agent_type)
 
     yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_START, f"Running: {cmd}")
@@ -185,6 +203,9 @@ async def exec_stream(agent_type: str, cmd: str) -> AsyncGenerator[AgentEvent, N
             stdin=asyncio.subprocess.DEVNULL,
         )
 
+        # Drain stderr concurrently to prevent pipe deadlock
+        stderr_task = asyncio.ensure_future(_drain_stderr(proc))
+
         if proc.stdout:
             async for raw_line in proc.stdout:
                 line = raw_line.decode(errors="replace")
@@ -193,18 +214,19 @@ async def exec_stream(agent_type: str, cmd: str) -> AsyncGenerator[AgentEvent, N
                     yield event
 
         exit_code = await proc.wait()
+        stderr_text = await stderr_task
 
-        if exit_code != 0 and proc.stderr:
-            stderr = await proc.stderr.read()
-            stderr_text = stderr.decode(errors="replace").strip()
-            if stderr_text:
-                yield AgentEvent(Agent.SYSTEM, ActionType.ERROR,
-                                 f"Process stderr: {stderr_text[:200]}")
+        if exit_code != 0 and stderr_text:
+            yield AgentEvent(Agent.SYSTEM, ActionType.ERROR,
+                             f"Process stderr: {stderr_text[:200]}")
 
         yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_END,
                          f"Process exited ({exit_code})")
+    except asyncio.CancelledError:
+        return
     except FileNotFoundError:
+        cmd_name = cmd.split()[0] if cmd.split() else cmd
         yield AgentEvent(Agent.SYSTEM, ActionType.ERROR,
-                         f"Command not found: {cmd.split()[0]}")
+                         f"Command not found: {cmd_name}")
     except Exception as e:
         yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"Exec error: {e}")
