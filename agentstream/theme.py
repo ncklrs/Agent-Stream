@@ -172,7 +172,7 @@ def render_logo() -> list[Text]:
 # ---------------------------------------------------------------------------
 
 HELP_CONTENT = """\
-[bold #818cf8]AgentStream[/] [dim]v0.2.0[/]
+[bold #818cf8]AgentStream[/] [dim]v1.0.0[/]
 
 [bold]Keyboard[/]
 [bold #818cf8]space[/]  [#94a3b8]Pause / Resume auto-scrolling[/]

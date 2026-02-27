@@ -62,7 +62,7 @@ keyboard:
         help="Run a command and stream its JSON output. AGENT is claude|codex|auto",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.2.0",
+        "--version", action="version", version="%(prog)s 1.0.0",
     )
 
     args = parser.parse_args()

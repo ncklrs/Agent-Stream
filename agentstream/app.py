@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from typing import Any
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, ScrollableContainer
+from textual.containers import Horizontal, ScrollableContainer, Vertical
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import ModalScreen
@@ -22,6 +23,9 @@ from agentstream.theme import (
     BG_DARK, BG_PANEL, BG_BAR, AGENT_COLORS, HELP_CONTENT,
 )
 from agentstream.streams import demo_stream, stdin_stream, file_stream, exec_stream
+
+# Max events buffered while paused (prevent unbounded memory growth)
+_PAUSE_BUFFER_MAX = 50_000
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +83,7 @@ class SessionToggle(Static):
 # Sidebar
 # ---------------------------------------------------------------------------
 
-class Sidebar(Static):
+class Sidebar(Vertical):
     """Sidebar showing all detected streams/sessions."""
 
     DEFAULT_CSS = f"""
@@ -164,6 +168,7 @@ class StatusBar(Static):
     show_claude = reactive(True)
     show_codex = reactive(True)
     total_cost = reactive(0.0)
+    buffered_count = reactive(0)
 
     def render(self) -> Text:
         bar = Text()
@@ -171,6 +176,8 @@ class StatusBar(Static):
         # Status badge
         if self.paused:
             bar.append("  PAUSED  ", style="bold white on #b91c1c")
+            if self.buffered_count > 0:
+                bar.append(f" +{self.buffered_count}", style="bold #fbbf24")
         else:
             bar.append(" STREAMING ", style="bold white on #059669")
 
@@ -266,6 +273,7 @@ class AgentStreamApp(App):
         self._codex_count = 0
         self._total_cost = 0.0
         self._last_action: ActionType | None = None
+        self._pause_buffer: deque[AgentEvent] = deque(maxlen=_PAUSE_BUFFER_MAX)
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-container"):
@@ -321,7 +329,7 @@ class AgentStreamApp(App):
     # --- Event handling ---
 
     def _add_event(self, event: AgentEvent) -> None:
-        # Track per-agent counts (always, even if filtered)
+        # Track per-agent counts (always, even when paused/filtered)
         if event.agent == Agent.CLAUDE:
             self._claude_count += 1
         elif event.agent == Agent.CODEX:
@@ -346,12 +354,23 @@ class AgentStreamApp(App):
             if cost:
                 self._total_cost += cost
 
+        # When paused, buffer events instead of writing to the log.
+        # This prevents new writes from evicting lines the user is reading.
+        if self.paused:
+            self._pause_buffer.append(event)
+            self._update_status()
+            return
+
         # Check visibility filters
         if not self._should_display(event):
             self._update_status()
             return
 
-        # Write to log
+        self._write_event_to_log(event)
+        self._update_status()
+
+    def _write_event_to_log(self, event: AgentEvent) -> None:
+        """Render and write a single event to the RichLog."""
         log = self.query_one("#stream-log", RichLog)
 
         # Insert separator before major events
@@ -360,9 +379,14 @@ class AgentStreamApp(App):
 
         log.write(render_event(event))
         self._last_action = event.action
-
         self.event_count += 1
-        self._update_status()
+
+    def _flush_pause_buffer(self) -> None:
+        """Write all buffered events to the log, respecting current filters."""
+        while self._pause_buffer:
+            event = self._pause_buffer.popleft()
+            if self._should_display(event):
+                self._write_event_to_log(event)
 
     def _should_display(self, event: AgentEvent) -> bool:
         """Check if event should be displayed based on current filters."""
@@ -417,6 +441,7 @@ class AgentStreamApp(App):
             status.show_claude = self.show_claude
             status.show_codex = self.show_codex
             status.total_cost = self._total_cost
+            status.buffered_count = len(self._pause_buffer)
         except Exception:
             pass
 
@@ -434,6 +459,7 @@ class AgentStreamApp(App):
         log.auto_scroll = not self.paused
         self.query_one(StatusBar).paused = self.paused
         if not self.paused:
+            self._flush_pause_buffer()
             log.scroll_end(animate=False)
 
     def action_clear_log(self) -> None:
@@ -444,6 +470,7 @@ class AgentStreamApp(App):
         self._codex_count = 0
         self._total_cost = 0.0
         self._last_action = None
+        self._pause_buffer.clear()
         for line in render_logo():
             log.write(line)
         self._update_status()

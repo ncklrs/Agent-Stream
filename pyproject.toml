@@ -4,13 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentstream"
-version = "0.2.0"
+version = "1.0.0"
 description = "TUI for streaming and viewing Claude and Codex agent events"
 requires-python = ">=3.10"
 license = "MIT"
+readme = "README.md"
 dependencies = [
     "textual>=0.40",
 ]
 
 [project.scripts]
 agentstream = "agentstream.__main__:main"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

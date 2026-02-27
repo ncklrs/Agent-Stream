@@ -1,0 +1,516 @@
+"""Tests for AgentStream parsers."""
+
+import json
+import pytest
+
+from agentstream.events import Agent, ActionType
+from agentstream.parsers import (
+    ClaudeCLIParser,
+    ClaudeSSEParser,
+    CodexJSONLParser,
+    AutoDetectParser,
+    create_parser,
+)
+
+
+# ---------------------------------------------------------------------------
+# Claude CLI Parser
+# ---------------------------------------------------------------------------
+
+class TestClaudeCLIParser:
+
+    def test_system_init(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "system", "subtype": "init",
+            "model": "claude-sonnet-4-6", "tools": ["Read", "Write"],
+            "claude_code_version": "2.1.0", "session_id": "sess-abc",
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.agent == Agent.CLAUDE
+        assert ev.action == ActionType.INIT
+        assert "claude-sonnet-4-6" in ev.content
+        assert "2 tools" in ev.content
+        assert ev.session_id == "sess-abc"
+
+    def test_assistant_text(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "Hello world"}]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TEXT_DELTA
+        assert "Hello world" in ev.content
+
+    def test_assistant_tool_use(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "name": "Read",
+                "input": {"file_path": "/tmp/foo.py"},
+            }]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_USE
+        assert "Read" in ev.content
+        assert "/tmp/foo.py" in ev.content
+
+    def test_assistant_thinking(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking", "thinking": "Let me think"}]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.THINKING
+
+    def test_user_tool_result(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result", "content": "file contents here",
+            }]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_RESULT
+
+    def test_user_tool_error(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result", "content": "File not found",
+                "is_error": True,
+            }]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_result_success(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "result", "subtype": "success",
+            "total_cost_usd": 0.0342, "num_turns": 3,
+            "duration_ms": 14200,
+            "usage": {"input_tokens": 12847, "output_tokens": 1203},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.RESULT
+        assert "$0.0342" in ev.content
+        assert ev.metadata["total_cost_usd"] == 0.0342
+
+    def test_result_error(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "result", "subtype": "error_max_turns",
+            "errors": ["Hit turn limit"],
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_stream_event_text_delta(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "stream_event",
+            "event": {
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "streaming..."},
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TEXT_DELTA
+        assert "streaming..." in ev.content
+
+    def test_compact_boundary(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "system", "subtype": "compact_boundary",
+            "compact_metadata": {"trigger": "auto", "pre_tokens": 50000},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.COMPACT
+        assert "50,000" in ev.content
+
+    def test_rate_limit_rejected(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "rejected"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_rate_limit_ok_ignored(self):
+        p = ClaudeCLIParser()
+        line = json.dumps({
+            "type": "rate_limit_event",
+            "rate_limit_info": {"status": "ok"},
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_empty_line_ignored(self):
+        p = ClaudeCLIParser()
+        assert p.parse_line("") is None
+        assert p.parse_line("   ") is None
+
+    def test_bad_json(self):
+        p = ClaudeCLIParser()
+        ev = p.parse_line("{broken json")
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_unknown_type_ignored(self):
+        p = ClaudeCLIParser()
+        ev = p.parse_line(json.dumps({"type": "future_new_type"}))
+        assert ev is None
+
+    def test_session_id_tracking(self):
+        p = ClaudeCLIParser()
+        p.parse_line(json.dumps({
+            "type": "system", "subtype": "init",
+            "model": "sonnet", "session_id": "s123",
+        }))
+        ev = p.parse_line(json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "hi"}]},
+        }))
+        assert ev.session_id == "s123"
+
+
+# ---------------------------------------------------------------------------
+# Codex JSONL Parser
+# ---------------------------------------------------------------------------
+
+class TestCodexJSONLParser:
+
+    def test_thread_started(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "thread.started",
+            "thread_id": "abcdef1234567890",
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.agent == Agent.CODEX
+        assert ev.action == ActionType.THREAD_START
+        assert "abcdef12" in ev.content
+        assert ev.session_id == "abcdef1234567890"
+
+    def test_turn_started(self):
+        p = CodexJSONLParser()
+        p.parse_line(json.dumps({"type": "thread.started", "thread_id": "t1"}))
+        ev = p.parse_line(json.dumps({"type": "turn.started"}))
+        assert ev is not None
+        assert ev.action == ActionType.TURN_START
+        assert ev.session_id == "t1"
+
+    def test_turn_completed(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "turn.completed",
+            "usage": {"input_tokens": 1000, "output_tokens": 200},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TURN_COMPLETE
+        assert "1,000 in" in ev.content
+
+    def test_turn_failed(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "turn.failed",
+            "error": {"message": "Something broke"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TURN_FAILED
+        assert "Something broke" in ev.content
+
+    def test_item_agent_message(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "All tests passed"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.AGENT_MESSAGE
+        assert "All tests passed" in ev.content
+
+    def test_item_assistant_message_normalized(self):
+        """Old 'assistant_message' type should be normalized to agent_message."""
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "assistant_message", "text": "Done"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.AGENT_MESSAGE
+
+    def test_item_command_started(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.started",
+            "item": {"type": "command_execution", "command": "npm test"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.COMMAND
+        assert "npm test" in ev.content
+
+    def test_item_command_completed_failure(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution", "command": "npm build",
+                "exit_code": 1, "aggregated_output": "Error: module not found",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_item_file_change(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {
+                "type": "file_change",
+                "changes": [
+                    {"path": "src/app.py", "kind": "update"},
+                    {"path": "src/new.py", "kind": "add"},
+                ],
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.FILE_CHANGE
+        assert "~src/app.py" in ev.content
+        assert "+src/new.py" in ev.content
+
+    def test_item_reasoning(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "reasoning", "text": "Analyzing codebase"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.REASONING
+
+    def test_item_mcp_tool(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "mcp_tool_call", "server": "docs", "tool": "search", "status": "done"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.MCP_TOOL
+        assert "docs/search" in ev.content
+
+    def test_item_web_search(self):
+        p = CodexJSONLParser()
+        line = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "web_search", "query": "python async best practices"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.WEB_SEARCH
+
+    def test_error_event(self):
+        p = CodexJSONLParser()
+        line = json.dumps({"type": "error", "message": "API error"})
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_reconnecting_ignored(self):
+        p = CodexJSONLParser()
+        line = json.dumps({"type": "error", "message": "Reconnecting..."})
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_bad_json(self):
+        p = CodexJSONLParser()
+        ev = p.parse_line("not json at all")
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+        assert ev.agent == Agent.CODEX
+
+
+# ---------------------------------------------------------------------------
+# Claude SSE Parser
+# ---------------------------------------------------------------------------
+
+class TestClaudeSSEParser:
+
+    def _feed(self, parser, event_type, data):
+        """Helper to feed a complete SSE event."""
+        parser.parse_line(f"event: {event_type}\n")
+        parser.parse_line(f"data: {json.dumps(data)}\n")
+        return parser.parse_line("\n")
+
+    def test_message_start(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "message_start", {
+            "type": "message_start",
+            "message": {"id": "msg_123", "model": "claude-sonnet-4-6"},
+        })
+        assert ev is not None
+        assert ev.action == ActionType.MESSAGE_START
+        assert "claude-sonnet-4-6" in ev.content
+        assert ev.session_id == "msg_123"
+
+    def test_text_delta(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "content_block_delta", {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": "Hello"},
+        })
+        assert ev is not None
+        assert ev.action == ActionType.TEXT_DELTA
+        assert ev.content == "Hello"
+
+    def test_thinking_block_start(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "content_block_start", {
+            "type": "content_block_start",
+            "content_block": {"type": "thinking"},
+        })
+        assert ev is not None
+        assert ev.action == ActionType.THINKING
+
+    def test_tool_use_block_start(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "content_block_start", {
+            "type": "content_block_start",
+            "content_block": {"type": "tool_use", "name": "Read"},
+        })
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_USE
+        assert "Read" in ev.content
+
+    def test_message_stop(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "message_stop", {"type": "message_stop"})
+        assert ev is not None
+        assert ev.action == ActionType.MESSAGE_STOP
+
+    def test_error_event(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "error", {
+            "type": "error",
+            "error": {"message": "Overloaded"},
+        })
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_ping_ignored(self):
+        p = ClaudeSSEParser()
+        ev = self._feed(p, "ping", {"type": "ping"})
+        assert ev is None
+
+    def test_bad_json_data(self):
+        p = ClaudeSSEParser()
+        p.parse_line("event: message_start\n")
+        p.parse_line("data: {broken\n")
+        ev = p.parse_line("\n")
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect parser
+# ---------------------------------------------------------------------------
+
+class TestAutoDetectParser:
+
+    def test_detects_claude_cli(self):
+        p = AutoDetectParser()
+        line = json.dumps({"type": "system", "subtype": "init", "model": "sonnet"})
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert p.detected_format == "claude-cli"
+
+    def test_detects_codex(self):
+        p = AutoDetectParser()
+        line = json.dumps({"type": "thread.started", "thread_id": "t1"})
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert p.detected_format == "codex"
+
+    def test_detects_sse(self):
+        p = AutoDetectParser()
+        p.parse_line("event: message_start\n")
+        assert p.detected_format == "claude-sse"
+
+    def test_empty_lines_skipped(self):
+        p = AutoDetectParser()
+        assert p.parse_line("") is None
+        assert p.parse_line("   ") is None
+        assert p.detected_format is None
+
+    def test_subsequent_lines_delegated(self):
+        p = AutoDetectParser()
+        p.parse_line(json.dumps({"type": "thread.started", "thread_id": "t1"}))
+        ev = p.parse_line(json.dumps({"type": "turn.started"}))
+        assert ev is not None
+        assert ev.action == ActionType.TURN_START
+
+    def test_fallback_to_claude_cli(self):
+        """Unknown JSON type without dots should default to Claude CLI."""
+        p = AutoDetectParser()
+        ev = p.parse_line(json.dumps({"type": "something_new", "data": "test"}))
+        assert p.detected_format == "claude-cli"
+
+    def test_fallback_codex_by_item_field(self):
+        """JSON with 'item' field should detect as Codex."""
+        p = AutoDetectParser()
+        p.parse_line(json.dumps({"type": "unknown", "item": {"type": "test"}}))
+        assert p.detected_format == "codex"
+
+
+# ---------------------------------------------------------------------------
+# create_parser factory
+# ---------------------------------------------------------------------------
+
+class TestCreateParser:
+
+    def test_claude(self):
+        p = create_parser("claude")
+        assert isinstance(p, ClaudeCLIParser)
+
+    def test_claude_sse(self):
+        p = create_parser("claude-sse")
+        assert isinstance(p, ClaudeSSEParser)
+
+    def test_codex(self):
+        p = create_parser("codex")
+        assert isinstance(p, CodexJSONLParser)
+
+    def test_auto(self):
+        p = create_parser("auto")
+        assert isinstance(p, AutoDetectParser)
+
+    def test_unknown_defaults_to_auto(self):
+        p = create_parser("whatever")
+        assert isinstance(p, AutoDetectParser)
