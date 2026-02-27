@@ -1,8 +1,9 @@
 """CLI entry point for AgentStream.
 
 Usage:
-    agentstream                              # Demo mode (default)
-    agentstream --demo                       # Explicit demo mode
+    agentstream                              # Watch mode (auto-discover sessions)
+    agentstream --watch                      # Explicit watch mode
+    agentstream --demo                       # Demo mode with simulated data
 
     # Pipe from headless CLI tools:
     claude -p "task" --output-format stream-json | agentstream
@@ -34,7 +35,8 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  agentstream                                             Demo mode
+  agentstream                                             Watch active sessions
+  agentstream --demo                                      Demo mode
   claude -p "task" --output-format stream-json \\
     | agentstream                                         Pipe Claude CLI
   codex exec --json "task" | agentstream                  Pipe Codex CLI
@@ -48,8 +50,12 @@ keyboard:
     )
 
     parser.add_argument(
+        "--watch", action="store_true",
+        help="Watch active Claude sessions (default on TTY)",
+    )
+    parser.add_argument(
         "--demo", action="store_true",
-        help="Run with simulated demo data (default when no input)",
+        help="Run with simulated demo data",
     )
     parser.add_argument(
         "--stdin", choices=["claude", "codex", "auto"],
@@ -71,6 +77,9 @@ keyboard:
 
     sources: list[tuple[str, object]] = []
 
+    if args.watch:
+        sources.append(("watch", None))
+
     if args.demo:
         sources.append(("demo", None))
 
@@ -85,10 +94,10 @@ keyboard:
         for agent, cmd in getattr(args, "exec"):
             sources.append(("exec", {"agent": agent, "cmd": cmd}))
 
-    # Default: demo if tty, auto-detect stdin if piped
+    # Default: watch mode if tty, auto-detect stdin if piped
     if not sources:
         if sys.stdin.isatty():
-            sources.append(("demo", None))
+            sources.append(("watch", None))
         else:
             sources.append(("stdin", "auto"))
 

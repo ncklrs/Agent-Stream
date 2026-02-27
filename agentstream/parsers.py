@@ -536,6 +536,147 @@ class CodexJSONLParser(BaseParser):
 
 
 # ---------------------------------------------------------------------------
+# Claude interactive session parser (~/.claude/projects/ JSONL files)
+# ---------------------------------------------------------------------------
+
+class ClaudeInteractiveParser(BaseParser):
+    """Parse Claude Code interactive session JSONL files.
+
+    For: tailing ~/.claude/projects/<project>/<uuid>.jsonl
+    Each line is a JSON object with 'type' in: assistant, user, progress,
+    system, file-history-snapshot. Uses camelCase sessionId.
+    """
+
+    def __init__(self):
+        self._session_id: str = ""
+
+    def parse_line(self, line: str) -> Optional[AgentEvent]:
+        line = line.strip()
+        if not line:
+            return None
+
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return None  # Silently skip malformed lines in watch mode
+
+        etype = data.get("type", "")
+
+        # Track session ID (camelCase in interactive format)
+        sid = data.get("sessionId", "")
+        if sid:
+            self._session_id = sid
+
+        if etype == "assistant":
+            return self._parse_assistant(data)
+        elif etype == "user":
+            return self._parse_user(data)
+        elif etype == "progress":
+            return self._parse_progress(data)
+        elif etype == "system":
+            return self._parse_system(data)
+        elif etype == "file-history-snapshot":
+            return None  # Not useful for display
+
+        return None
+
+    def _parse_assistant(self, data: dict) -> Optional[AgentEvent]:
+        message = data.get("message", {})
+        content = message.get("content", [])
+
+        if not isinstance(content, list):
+            return None
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+
+            if block_type == "text":
+                text = block.get("text", "")
+                if text:
+                    return AgentEvent(Agent.CLAUDE, ActionType.TEXT_DELTA,
+                                      text[:400], session_id=self._session_id)
+
+            elif block_type == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {})
+                inp_str = _summarize_tool_input(name, inp)
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  f"{name} {inp_str}", session_id=self._session_id)
+
+            elif block_type == "thinking":
+                text = block.get("thinking", "")
+                if text:
+                    return AgentEvent(Agent.CLAUDE, ActionType.THINKING,
+                                      text[:200], session_id=self._session_id)
+
+        return None
+
+    def _parse_user(self, data: dict) -> Optional[AgentEvent]:
+        message = data.get("message", {})
+        content = message.get("content", "")
+
+        # Plain string = user typed a prompt
+        if isinstance(content, str) and content.strip():
+            return AgentEvent(Agent.CLAUDE, ActionType.USER_PROMPT,
+                              content.strip()[:200], session_id=self._session_id)
+
+        # Array = tool results
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    is_error = block.get("is_error", False)
+                    result_content = block.get("content", "")
+                    if is_error:
+                        text = result_content if isinstance(result_content, str) else str(result_content)[:100]
+                        return AgentEvent(Agent.CLAUDE, ActionType.ERROR,
+                                          f"Tool error: {text[:150]}",
+                                          session_id=self._session_id)
+                    if isinstance(result_content, str) and result_content.strip():
+                        return AgentEvent(Agent.CLAUDE, ActionType.TOOL_RESULT,
+                                          result_content[:200],
+                                          session_id=self._session_id)
+
+        return None
+
+    def _parse_progress(self, data: dict) -> Optional[AgentEvent]:
+        progress = data.get("data", {})
+        ptype = progress.get("type", "")
+
+        if ptype == "hook_progress":
+            return None  # Too noisy
+
+        if ptype == "bash_progress":
+            elapsed = progress.get("elapsedTimeSeconds", 0)
+            if elapsed >= 3:
+                output = progress.get("output", "")
+                snippet = output[:80] if output else f"running ({elapsed}s)"
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  f"Bash {snippet}", session_id=self._session_id)
+            return None
+
+        if ptype == "agent_progress":
+            prompt = progress.get("prompt", "")
+            if prompt:
+                return AgentEvent(Agent.CLAUDE, ActionType.TASK_UPDATE,
+                                  f"Subagent: {prompt[:120]}",
+                                  session_id=self._session_id)
+            return None
+
+        return None
+
+    def _parse_system(self, data: dict) -> Optional[AgentEvent]:
+        subtype = data.get("subtype", "")
+        if subtype == "stop_hook_summary":
+            return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_STOP,
+                              "Session hook stopped", session_id=self._session_id)
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Auto-detect parser
 # ---------------------------------------------------------------------------
 
@@ -631,6 +772,8 @@ def create_parser(agent_type: str) -> BaseParser:
         return ClaudeCLIParser()
     elif agent_type == "claude-sse":
         return ClaudeSSEParser()
+    elif agent_type == "claude-interactive":
+        return ClaudeInteractiveParser()
     elif agent_type == "codex":
         return CodexJSONLParser()
     else:

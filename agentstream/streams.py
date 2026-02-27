@@ -4,7 +4,10 @@ Each source is an async generator that yields AgentEvent objects.
 """
 
 import asyncio
+import os
+import pathlib
 import sys
+import time
 from typing import AsyncGenerator
 
 from agentstream.events import Agent, ActionType, AgentEvent
@@ -230,3 +233,166 @@ async def exec_stream(agent_type: str, cmd: str) -> AsyncGenerator[AgentEvent, N
                          f"Command not found: {cmd_name}")
     except Exception as e:
         yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"Exec error: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Watch stream (auto-discover active Claude interactive sessions)
+# ---------------------------------------------------------------------------
+
+_CLAUDE_PROJECTS_DIR = pathlib.Path.home() / ".claude" / "projects"
+_SCAN_INTERVAL = 5.0       # seconds between discovery scans
+_SESSION_MAX_AGE = 600.0   # 10 min — ignore files older than this
+_TAIL_IDLE_TIMEOUT = 600.0 # 10 min — stop tailing after no new data
+
+
+def _discover_sessions() -> list[pathlib.Path]:
+    """Find active JSONL session files under ~/.claude/projects/."""
+    if not _CLAUDE_PROJECTS_DIR.is_dir():
+        return []
+
+    cutoff = time.time() - _SESSION_MAX_AGE
+    found: list[pathlib.Path] = []
+
+    for project_dir in _CLAUDE_PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+        # Top-level session files: <uuid>.jsonl
+        for f in project_dir.glob("*.jsonl"):
+            if f.stat().st_mtime >= cutoff:
+                found.append(f)
+        # Subagent files: <uuid>/subagents/agent-*.jsonl
+        for f in project_dir.glob("*/subagents/agent-*.jsonl"):
+            if f.stat().st_mtime >= cutoff:
+                found.append(f)
+
+    return found
+
+
+def _extract_project_name(session_path: pathlib.Path) -> str:
+    """Extract a readable project name from the session file path.
+
+    The project dir is like `-Users-nick-Dev-Agent-Stream`.
+    We take the last path segment after the final `-Dev-` or just the last part.
+    """
+    # The project dir is either the parent (top-level) or grandparent (subagent)
+    if session_path.parent.name == "subagents":
+        project_dir = session_path.parent.parent.parent
+    else:
+        project_dir = session_path.parent
+
+    name = project_dir.name
+    # Try to extract the last meaningful segment
+    # Pattern: -Users-foo-Dev-ProjectName or -Users-foo-some-path
+    parts = name.split("-")
+    # Find last non-empty segment
+    if parts:
+        # Skip leading empty from the dash prefix
+        clean = [p for p in parts if p]
+        if clean:
+            return clean[-1]
+    return name[:16]
+
+
+async def _tail_session_file(
+    path: pathlib.Path,
+    queue: asyncio.Queue,
+    project_name: str,
+) -> None:
+    """Tail a session JSONL file and push parsed events into the queue."""
+    parser = create_parser("claude-interactive")
+
+    # Notify discovery
+    await queue.put(AgentEvent(
+        Agent.SYSTEM, ActionType.STREAM_START,
+        f"Watching {project_name}/{path.stem[:8]}",
+    ))
+
+    try:
+        with open(path, "r") as f:
+            # Seek to end to only show new events
+            f.seek(0, 2)
+            last_data_time = time.time()
+
+            while True:
+                line = f.readline()
+                if not line:
+                    if time.time() - last_data_time > _TAIL_IDLE_TIMEOUT:
+                        await queue.put(AgentEvent(
+                            Agent.SYSTEM, ActionType.STREAM_END,
+                            f"Session idle: {project_name}/{path.stem[:8]}",
+                        ))
+                        return
+                    await asyncio.sleep(0.15)
+                    continue
+
+                last_data_time = time.time()
+                event = parser.parse_line(line)
+                if event:
+                    await queue.put(event)
+
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        await queue.put(AgentEvent(
+            Agent.SYSTEM, ActionType.ERROR,
+            f"Watch error ({project_name}): {e}",
+        ))
+
+
+async def watch_stream() -> AsyncGenerator[AgentEvent, None]:
+    """Auto-discover and tail active Claude interactive sessions."""
+    yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_START,
+                     "Watch mode — scanning for active Claude sessions")
+
+    queue: asyncio.Queue = asyncio.Queue()
+    # Map path -> asyncio.Task to avoid duplicate tails
+    active_tails: dict[str, asyncio.Task] = {}
+
+    try:
+        while True:
+            # Discover sessions
+            sessions = _discover_sessions()
+
+            if not sessions and not active_tails:
+                yield AgentEvent(Agent.SYSTEM, ActionType.PING,
+                                 "Scanning for active sessions...")
+
+            # Spawn tail tasks for newly discovered sessions
+            for path in sessions:
+                key = str(path)
+                if key not in active_tails or active_tails[key].done():
+                    project_name = _extract_project_name(path)
+                    task = asyncio.create_task(
+                        _tail_session_file(path, queue, project_name)
+                    )
+                    active_tails[key] = task
+
+            # Clean up finished tasks
+            done_keys = [k for k, t in active_tails.items() if t.done()]
+            for k in done_keys:
+                del active_tails[k]
+
+            # Drain all queued events
+            while not queue.empty():
+                try:
+                    event = queue.get_nowait()
+                    yield event
+                except asyncio.QueueEmpty:
+                    break
+
+            # Wait before next scan, but keep draining the queue
+            deadline = asyncio.get_event_loop().time() + _SCAN_INTERVAL
+            while asyncio.get_event_loop().time() < deadline:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.2)
+                    yield event
+                except (asyncio.TimeoutError, TimeoutError):
+                    continue
+
+    except asyncio.CancelledError:
+        # Cancel all tail tasks
+        for task in active_tails.values():
+            task.cancel()
+        if active_tails:
+            await asyncio.gather(*active_tails.values(), return_exceptions=True)
+        return

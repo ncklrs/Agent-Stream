@@ -53,6 +53,7 @@ ACTION_STYLE: dict[ActionType, str] = {
     ActionType.INIT: "",
     ActionType.COMPACT: "#64748b",
     ActionType.TASK_UPDATE: "#94a3b8",
+    ActionType.USER_PROMPT: "#60a5fa",
     ActionType.STREAM_START: "#64748b",
     ActionType.STREAM_END: "#64748b",
 }
@@ -86,6 +87,7 @@ ACTION_ICONS: dict[ActionType, str] = {
     ActionType.WEB_SEARCH: "??",
     ActionType.COMPACT: "..",
     ActionType.TASK_UPDATE: ">>",
+    ActionType.USER_PROMPT: "U>",
     ActionType.PING: "..",
     ActionType.UNKNOWN: "  ",
 }
@@ -97,6 +99,7 @@ SEPARATOR_ACTIONS = frozenset({
     ActionType.THREAD_START,
     ActionType.TURN_START,
     ActionType.RESULT,
+    ActionType.USER_PROMPT,
 })
 
 # ---------------------------------------------------------------------------
@@ -184,7 +187,8 @@ HELP_CONTENT = """\
 [bold #818cf8]    q[/]  [#94a3b8]Quit[/]
 
 [bold]Usage[/]
-[#94a3b8]agentstream[/]                           [dim]Demo mode[/]
+[#94a3b8]agentstream[/]                           [dim]Watch mode[/]
+[#94a3b8]agentstream --demo[/]                    [dim]Demo mode[/]
 [#94a3b8]... | agentstream[/]                     [dim]Pipe (auto-detect)[/]
 [#94a3b8]agentstream --stdin claude[/]            [dim]Pipe with hint[/]
 [#94a3b8]agentstream --exec codex "cmd"[/]        [dim]Run subprocess[/]

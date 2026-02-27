@@ -7,6 +7,7 @@ from agentstream.events import Agent, ActionType
 from agentstream.parsers import (
     ClaudeCLIParser,
     ClaudeSSEParser,
+    ClaudeInteractiveParser,
     CodexJSONLParser,
     AutoDetectParser,
     create_parser,
@@ -439,6 +440,177 @@ class TestClaudeSSEParser:
 
 
 # ---------------------------------------------------------------------------
+# Claude Interactive Parser
+# ---------------------------------------------------------------------------
+
+class TestClaudeInteractiveParser:
+
+    def test_assistant_text(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "assistant",
+            "sessionId": "fa32-abcd",
+            "message": {"content": [{"type": "text", "text": "Hello world"}]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.agent == Agent.CLAUDE
+        assert ev.action == ActionType.TEXT_DELTA
+        assert "Hello world" in ev.content
+        assert ev.session_id == "fa32-abcd"
+
+    def test_assistant_tool_use(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "assistant",
+            "sessionId": "s1",
+            "message": {"content": [{
+                "type": "tool_use", "name": "Read",
+                "input": {"file_path": "/tmp/foo.py"},
+            }]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_USE
+        assert "Read" in ev.content
+        assert "/tmp/foo.py" in ev.content
+
+    def test_assistant_thinking(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking", "thinking": "Let me think"}]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.THINKING
+
+    def test_user_plain_prompt(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "user",
+            "sessionId": "s1",
+            "message": {"content": "Fix the login bug"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.USER_PROMPT
+        assert "Fix the login bug" in ev.content
+
+    def test_user_tool_result(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result", "content": "file contents here",
+            }]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_RESULT
+
+    def test_user_tool_error(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result", "content": "File not found",
+                "is_error": True,
+            }]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+
+    def test_progress_hook_ignored(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "progress",
+            "data": {"type": "hook_progress"},
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_progress_bash_short_ignored(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "progress",
+            "data": {"type": "bash_progress", "elapsedTimeSeconds": 1},
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_progress_bash_long_shown(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "progress",
+            "data": {"type": "bash_progress", "elapsedTimeSeconds": 5, "output": "building..."},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_USE
+        assert "Bash" in ev.content
+
+    def test_progress_agent(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "progress",
+            "data": {"type": "agent_progress", "prompt": "Research auth patterns"},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TASK_UPDATE
+        assert "Subagent" in ev.content
+
+    def test_file_history_snapshot_ignored(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "file-history-snapshot",
+            "messageId": "abc",
+            "snapshot": {},
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_system_stop_hook(self):
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "system",
+            "subtype": "stop_hook_summary",
+            "sessionId": "s1",
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.MESSAGE_STOP
+
+    def test_session_id_camelcase_tracking(self):
+        """Interactive format uses camelCase sessionId."""
+        p = ClaudeInteractiveParser()
+        p.parse_line(json.dumps({
+            "type": "assistant",
+            "sessionId": "sess-xyz",
+            "message": {"content": [{"type": "text", "text": "hi"}]},
+        }))
+        # Subsequent event should inherit session_id
+        ev = p.parse_line(json.dumps({
+            "type": "user",
+            "message": {"content": "follow up"},
+        }))
+        assert ev.session_id == "sess-xyz"
+
+    def test_empty_line_ignored(self):
+        p = ClaudeInteractiveParser()
+        assert p.parse_line("") is None
+        assert p.parse_line("   ") is None
+
+    def test_bad_json_silently_skipped(self):
+        """Interactive parser silently skips bad JSON (unlike CLI parser)."""
+        p = ClaudeInteractiveParser()
+        ev = p.parse_line("{broken json")
+        assert ev is None
+
+
+# ---------------------------------------------------------------------------
 # Auto-detect parser
 # ---------------------------------------------------------------------------
 
@@ -502,6 +674,10 @@ class TestCreateParser:
     def test_claude_sse(self):
         p = create_parser("claude-sse")
         assert isinstance(p, ClaudeSSEParser)
+
+    def test_claude_interactive(self):
+        p = create_parser("claude-interactive")
+        assert isinstance(p, ClaudeInteractiveParser)
 
     def test_codex(self):
         p = create_parser("codex")

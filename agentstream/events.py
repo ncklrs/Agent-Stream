@@ -33,6 +33,7 @@ class ActionType(str, Enum):
     PING = "ping"
     COMPACT = "compact"
     TASK_UPDATE = "task"
+    USER_PROMPT = "user_prompt"
 
     # Codex
     THREAD_START = "thread"

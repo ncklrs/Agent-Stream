@@ -22,7 +22,7 @@ from agentstream.theme import (
     CLAUDE_PRIMARY, CLAUDE_DIM, CODEX_PRIMARY, CODEX_DIM,
     BG_DARK, BG_PANEL, BG_BAR, AGENT_COLORS, HELP_CONTENT,
 )
-from agentstream.streams import demo_stream, stdin_stream, file_stream, exec_stream
+from agentstream.streams import demo_stream, stdin_stream, file_stream, exec_stream, watch_stream
 
 # Max events buffered while paused (prevent unbounded memory growth)
 _PAUSE_BUFFER_MAX = 50_000
@@ -303,6 +303,8 @@ class AgentStreamApp(App):
     def _start_source(self, source_type: str, config: Any) -> None:
         if source_type == "demo":
             self._consume(demo_stream())
+        elif source_type == "watch":
+            self._consume(watch_stream())
         elif source_type == "stdin":
             self._consume(stdin_stream(config or "auto"))
         elif source_type == "file":
