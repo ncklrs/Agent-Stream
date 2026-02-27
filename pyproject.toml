@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentstream"
+version = "0.1.0"
+description = "TUI for streaming and viewing Claude and Codex agent events"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "textual>=0.40",
+    "httpx>=0.25",
+]
+
+[project.scripts]
+agentstream = "agentstream.__main__:main"
