@@ -818,9 +818,11 @@ class CodexInteractiveParser(BaseParser):
                               display[:200], session_id=self._session_id)
 
         elif item_type == "function_call_output":
-            output = payload.get("output", "")
-            return AgentEvent(Agent.CODEX, ActionType.TOOL_RESULT,
-                              str(output)[:200], session_id=self._session_id)
+            raw = payload.get("output", "")
+            output, exit_code = _clean_codex_output(raw)
+            action = ActionType.ERROR if exit_code != 0 else ActionType.TOOL_RESULT
+            return AgentEvent(Agent.CODEX, action,
+                              output[:200], session_id=self._session_id)
 
         elif item_type == "custom_tool_call":
             name = payload.get("name", payload.get("tool", "?"))
@@ -952,6 +954,40 @@ def _extract_codex_command(args_raw: str | dict) -> str:
     elif isinstance(args_raw, dict):
         return str(args_raw.get("cmd", args_raw.get("command", str(args_raw)[:200])))
     return str(args_raw)[:200]
+
+
+def _clean_codex_output(raw: str) -> tuple[str, int]:
+    """Strip Codex execution metadata wrapper from function_call_output.
+
+    Raw format:
+        Chunk ID: <hash>
+        Wall time: <seconds> seconds
+        Process exited with code <N>
+        Original token count: <N>
+        Output:
+        <actual output>
+
+    Returns (cleaned_output, exit_code).
+    """
+    exit_code = 0
+    # Extract exit code from metadata
+    for line in raw.split("\n"):
+        if line.startswith("Process exited with code "):
+            try:
+                exit_code = int(line.split("code ")[-1].strip())
+            except ValueError:
+                pass
+            break
+
+    # Extract actual output after "Output:\n"
+    if "\nOutput:\n" in raw:
+        output = raw.split("\nOutput:\n", 1)[1].strip()
+    elif raw.startswith("Output:\n"):
+        output = raw[len("Output:\n"):].strip()
+    else:
+        output = raw.strip()
+
+    return output, exit_code
 
 
 def create_parser(agent_type: str) -> BaseParser:

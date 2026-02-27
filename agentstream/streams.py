@@ -326,8 +326,11 @@ async def _tail_session_file(
 
     try:
         with open(path, "r") as f:
-            # Seek to end to only show new events
-            f.seek(0, 2)
+            # Claude sessions are long-lived — seek to end, only show new events.
+            # Codex sessions are per-session files — read from start to catch
+            # the initial user prompt and session metadata.
+            if parser_type != "codex-interactive":
+                f.seek(0, 2)
             last_data_time = time.time()
 
             while True:

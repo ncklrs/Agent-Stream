@@ -719,20 +719,56 @@ class TestCodexInteractiveParser:
         assert "git branch --show-current" in ev.content
 
     def test_function_call_output(self):
-        """Tool result from response_item/function_call_output."""
+        """Tool result strips Codex metadata wrapper and shows clean output."""
         p = CodexInteractiveParser()
         line = json.dumps({
             "type": "response_item",
             "payload": {
                 "type": "function_call_output",
                 "call_id": "call_abc123",
-                "output": "main\n",
+                "output": "Chunk ID: a74dfd\nWall time: 0.05 seconds\nProcess exited with code 0\nOriginal token count: 7\nOutput:\nMT-533-portal-components\n",
             },
         })
         ev = p.parse_line(line)
         assert ev is not None
         assert ev.action == ActionType.TOOL_RESULT
-        assert "main" in ev.content
+        assert "MT-533-portal-components" in ev.content
+        # Metadata should be stripped
+        assert "Chunk ID" not in ev.content
+        assert "Wall time" not in ev.content
+        assert "Process exited" not in ev.content
+
+    def test_function_call_output_error(self):
+        """Non-zero exit code maps to ERROR action."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_abc123",
+                "output": "Chunk ID: x\nWall time: 1.0 seconds\nProcess exited with code 1\nOriginal token count: 20\nOutput:\nError: module not found\n",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.ERROR
+        assert "module not found" in ev.content
+
+    def test_function_call_output_plain(self):
+        """Output without Codex wrapper is passed through as-is."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_abc123",
+                "output": "plain output text",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_RESULT
+        assert "plain output text" in ev.content
 
     def test_task_started(self):
         """Turn lifecycle: task_started → TURN_START."""
