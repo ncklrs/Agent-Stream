@@ -83,7 +83,7 @@ class SessionToggle(Static):
         t = Text()
         t.append(f" {icon} ", style=style)
         t.append(f"{self.agent.value.upper()[:3]} ", style=style)
-        t.append(self.display_name[:10], style=f"dim {dim}")
+        t.append(self.display_name[:14], style=f"dim {dim}")
         t.append(f"  {self.event_count}", style=f"dim {SYSTEM_DIM}")
         return t
 
@@ -437,9 +437,11 @@ class AgentStreamApp(App):
         sid = event.session_id
         agent = event.agent
 
-        # Generate display name
+        # Generate display name — prefer project name from watch mode metadata
         if sid.startswith("demo-"):
             name = "Demo"
+        elif event.metadata and event.metadata.get("project_name"):
+            name = event.metadata["project_name"]
         else:
             name = sid[:8]
 

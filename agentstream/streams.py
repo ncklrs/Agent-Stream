@@ -328,6 +328,9 @@ async def _tail_session_file(
                 last_data_time = time.time()
                 event = parser.parse_line(line)
                 if event:
+                    if event.metadata is None:
+                        event.metadata = {}
+                    event.metadata["project_name"] = project_name
                     await queue.put(event)
 
     except asyncio.CancelledError:
