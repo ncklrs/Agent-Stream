@@ -1,23 +1,24 @@
 """CLI entry point for AgentStream.
 
 Usage:
-    agentstream                              # Demo mode
+    agentstream                              # Demo mode (default)
     agentstream --demo                       # Explicit demo mode
 
     # Pipe from headless CLI tools:
-    codex exec --json "task" | agentstream --stdin codex
-    claude ... | agentstream --stdin claude
-    some_tool | agentstream --stdin auto      # Auto-detect format
+    claude -p "task" --output-format stream-json | agentstream
+    codex exec --json "task" | agentstream
+    some_tool | agentstream --stdin auto      # Force stdin + auto-detect
 
     # Run a CLI tool as subprocess:
-    agentstream --exec codex "codex exec --json 'refactor auth'"
-    agentstream --exec claude "curl -N https://api.anthropic.com/v1/messages ..."
+    agentstream --exec codex "codex exec --json 'task'"
+    agentstream --exec claude "claude -p 'task' --output-format stream-json"
 
     # Watch log files:
     agentstream --file codex ~/.codex/sessions/2025/01/01/rollout-abc.jsonl
 
     # Combine multiple sources:
-    agentstream --exec codex "codex exec --json 'task'" --file claude /tmp/claude.sse
+    agentstream --exec codex "codex exec --json 'task'" \\
+                --exec claude "claude -p 'task' --output-format stream-json"
 """
 
 import argparse
@@ -31,11 +32,16 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  agentstream                                       Demo mode
-  codex exec --json "task" | agentstream            Pipe Codex output (auto-detect)
-  agentstream --exec codex "codex exec --json 'x'"  Run Codex as subprocess
-  agentstream --file codex /path/to/session.jsonl   Watch a Codex log file
-  agentstream --stdin claude                        Pipe Claude SSE from stdin
+  agentstream                                             Demo mode
+  claude -p "task" --output-format stream-json \\
+    | agentstream                                         Pipe Claude CLI
+  codex exec --json "task" | agentstream                  Pipe Codex CLI
+  agentstream --exec codex "codex exec --json 'task'"     Run Codex subprocess
+  agentstream --file codex /path/to/session.jsonl         Watch log file
+
+keyboard:
+  space  Pause/Resume    s    Toggle sidebar    1/2  Filter agents
+  c      Clear log       ?    Help              q    Quit
 """,
     )
 
@@ -56,7 +62,7 @@ examples:
         help="Run a command and stream its JSON output. AGENT is claude|codex|auto",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.1.0",
+        "--version", action="version", version="%(prog)s 0.2.0",
     )
 
     args = parser.parse_args()
@@ -77,7 +83,7 @@ examples:
         for agent, cmd in getattr(args, "exec"):
             sources.append(("exec", {"agent": agent, "cmd": cmd}))
 
-    # Default behavior: demo if tty, auto-detect stdin if piped
+    # Default: demo if tty, auto-detect stdin if piped
     if not sources:
         if sys.stdin.isatty():
             sources.append(("demo", None))

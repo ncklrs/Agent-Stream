@@ -1,4 +1,4 @@
-"""Parsers for Claude SSE and Codex JSONL stream formats."""
+"""Parsers for Claude SSE, Claude CLI JSONL, and Codex JSONL stream formats."""
 
 import json
 from typing import Optional
@@ -13,18 +13,21 @@ class BaseParser:
         raise NotImplementedError
 
 
-class ClaudeSSEParser(BaseParser):
-    """Parse Claude API server-sent events into AgentEvents.
+# ---------------------------------------------------------------------------
+# Claude API SSE parser (raw HTTP streaming)
+# ---------------------------------------------------------------------------
 
-    SSE format:
-        event: <type>
-        data: <json>
-        <blank line>
+class ClaudeSSEParser(BaseParser):
+    """Parse Claude Messages API server-sent events.
+
+    For: curl -N https://api.anthropic.com/v1/messages ... | agentstream
+    SSE format: event: <type>\\ndata: <json>\\n\\n
     """
 
     def __init__(self):
         self._event_type: Optional[str] = None
         self._data_lines: list[str] = []
+        self._session_id: str = ""
 
     def parse_line(self, line: str) -> Optional[AgentEvent]:
         line = line.rstrip("\r\n")
@@ -43,8 +46,7 @@ class ClaudeSSEParser(BaseParser):
                 self._data_lines = []
                 return event
             return None
-        else:
-            return None
+        return None
 
     def _process(self, event_type: Optional[str], data: str) -> Optional[AgentEvent]:
         try:
@@ -57,29 +59,36 @@ class ClaudeSSEParser(BaseParser):
         if etype == "message_start":
             msg = payload.get("message", {})
             model = msg.get("model", "unknown")
-            return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_START, f"Session started ({model})")
+            self._session_id = msg.get("id", self._session_id)
+            return AgentEvent(
+                Agent.CLAUDE, ActionType.MESSAGE_START,
+                f"Session started ({model})", session_id=self._session_id,
+            )
 
         elif etype == "content_block_start":
             block = payload.get("content_block", {})
-            block_type = block.get("type", "unknown")
+            block_type = block.get("type", "")
             if block_type == "thinking":
-                return AgentEvent(Agent.CLAUDE, ActionType.THINKING, "Thinking...")
+                return AgentEvent(Agent.CLAUDE, ActionType.THINKING, "Thinking...",
+                                  session_id=self._session_id)
             elif block_type == "tool_use":
                 name = block.get("name", "unknown_tool")
-                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE, f"Calling {name}")
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE, f"Calling {name}",
+                                  session_id=self._session_id)
             return None
 
         elif etype == "content_block_delta":
             delta = payload.get("delta", {})
-            delta_type = delta.get("type", "unknown")
-            if delta_type == "text_delta":
-                return AgentEvent(Agent.CLAUDE, ActionType.TEXT_DELTA, delta.get("text", ""))
-            elif delta_type == "thinking_delta":
-                return AgentEvent(Agent.CLAUDE, ActionType.THINKING, delta.get("thinking", ""))
-            elif delta_type == "input_json_delta":
-                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE, delta.get("partial_json", ""))
-            elif delta_type == "signature_delta":
-                return None
+            dt = delta.get("type", "")
+            if dt == "text_delta":
+                return AgentEvent(Agent.CLAUDE, ActionType.TEXT_DELTA,
+                                  delta.get("text", ""), session_id=self._session_id)
+            elif dt == "thinking_delta":
+                return AgentEvent(Agent.CLAUDE, ActionType.THINKING,
+                                  delta.get("thinking", ""), session_id=self._session_id)
+            elif dt == "input_json_delta":
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  delta.get("partial_json", ""), session_id=self._session_id)
             return None
 
         elif etype == "content_block_stop":
@@ -87,38 +96,308 @@ class ClaudeSSEParser(BaseParser):
 
         elif etype == "message_delta":
             delta = payload.get("delta", {})
-            stop_reason = delta.get("stop_reason", "")
+            stop = delta.get("stop_reason", "")
             usage = payload.get("usage", {})
             tokens = usage.get("output_tokens", "")
-            parts = []
-            if stop_reason:
-                parts.append(stop_reason)
-            if tokens:
-                parts.append(f"{tokens} tokens")
+            parts = [p for p in [stop, f"{tokens} tokens" if tokens else ""] if p]
             if parts:
-                return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_STOP, " | ".join(parts))
+                return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_STOP,
+                                  " | ".join(parts), session_id=self._session_id)
             return None
 
         elif etype == "message_stop":
-            return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_STOP, "Message complete")
+            return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_STOP, "Complete",
+                              session_id=self._session_id)
 
         elif etype == "ping":
-            return None  # Skip pings in display
+            return None
 
         elif etype == "error":
             error = payload.get("error", {})
-            msg = error.get("message", "Unknown error")
-            return AgentEvent(Agent.CLAUDE, ActionType.ERROR, msg)
+            return AgentEvent(Agent.CLAUDE, ActionType.ERROR,
+                              error.get("message", "Unknown error"),
+                              session_id=self._session_id)
 
-        else:
-            return AgentEvent(Agent.CLAUDE, ActionType.UNKNOWN, f"{etype}")
+        return None
 
+
+# ---------------------------------------------------------------------------
+# Claude CLI JSONL parser (claude -p --output-format stream-json)
+# ---------------------------------------------------------------------------
+
+class ClaudeCLIParser(BaseParser):
+    """Parse Claude Code CLI --output-format stream-json output.
+
+    For: claude -p "task" --output-format stream-json | agentstream
+    Each line is a JSON object with 'type' field: system, assistant, user,
+    stream_event, result, tool_progress, etc.
+    """
+
+    def __init__(self):
+        self._session_id: str = ""
+
+    def parse_line(self, line: str) -> Optional[AgentEvent]:
+        line = line.strip()
+        if not line:
+            return None
+
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return AgentEvent(Agent.CLAUDE, ActionType.ERROR, f"Bad JSON: {line[:80]}")
+
+        etype = data.get("type", "unknown")
+        subtype = data.get("subtype", "")
+
+        # Track session ID from any event that carries it
+        sid = data.get("session_id", "")
+        if sid:
+            self._session_id = sid
+
+        if etype == "system":
+            return self._parse_system(subtype, data)
+        elif etype == "assistant":
+            return self._parse_assistant(data)
+        elif etype == "user":
+            return self._parse_user(data)
+        elif etype == "stream_event":
+            return self._parse_stream_event(data)
+        elif etype == "result":
+            return self._parse_result(data)
+        elif etype == "tool_progress":
+            name = data.get("tool_name", "")
+            elapsed = data.get("elapsed_time_seconds", 0)
+            if elapsed > 2:
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  f"{name} ({elapsed:.0f}s...)",
+                                  session_id=self._session_id)
+            return None
+        elif etype == "tool_use_summary":
+            summary = data.get("summary", "")
+            if summary:
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_RESULT,
+                                  summary[:200], session_id=self._session_id)
+            return None
+        elif etype == "rate_limit_event":
+            info = data.get("rate_limit_info", {})
+            status = info.get("status", "")
+            if status == "rejected":
+                return AgentEvent(Agent.CLAUDE, ActionType.ERROR,
+                                  "Rate limited", session_id=self._session_id)
+            return None
+        elif etype == "auth_status":
+            if data.get("error"):
+                return AgentEvent(Agent.CLAUDE, ActionType.ERROR,
+                                  f"Auth: {data['error']}", session_id=self._session_id)
+            return None
+
+        return None  # Skip unknown types silently
+
+    def _parse_system(self, subtype: str, data: dict) -> Optional[AgentEvent]:
+        if subtype == "init":
+            model = data.get("model", "unknown")
+            tools = data.get("tools", [])
+            version = data.get("claude_code_version", "")
+            parts = [model]
+            if tools:
+                parts.append(f"{len(tools)} tools")
+            if version:
+                parts.append(f"v{version}")
+            return AgentEvent(Agent.CLAUDE, ActionType.INIT,
+                              " | ".join(parts), session_id=self._session_id)
+
+        elif subtype == "compact_boundary":
+            meta = data.get("compact_metadata", {})
+            trigger = meta.get("trigger", "auto")
+            tokens = meta.get("pre_tokens", 0)
+            return AgentEvent(Agent.CLAUDE, ActionType.COMPACT,
+                              f"Context compacted ({trigger}, {tokens:,} tokens)",
+                              session_id=self._session_id)
+
+        elif subtype == "status":
+            status = data.get("status", "")
+            if status == "compacting":
+                return AgentEvent(Agent.CLAUDE, ActionType.COMPACT,
+                                  "Compacting context...", session_id=self._session_id)
+            return None
+
+        elif subtype == "task_started":
+            desc = data.get("description", "")
+            return AgentEvent(Agent.CLAUDE, ActionType.TASK_UPDATE,
+                              f"Started: {desc}", session_id=self._session_id)
+
+        elif subtype == "task_notification":
+            status = data.get("status", "")
+            summary = data.get("summary", "")
+            return AgentEvent(Agent.CLAUDE, ActionType.TASK_UPDATE,
+                              f"{status}: {summary}"[:150], session_id=self._session_id)
+
+        elif subtype == "task_progress":
+            desc = data.get("description", "")
+            usage = data.get("usage", {})
+            tools = usage.get("tool_uses", 0)
+            if tools:
+                return AgentEvent(Agent.CLAUDE, ActionType.TASK_UPDATE,
+                                  f"{desc} ({tools} tool calls)",
+                                  session_id=self._session_id)
+            return None
+
+        return None
+
+    def _parse_assistant(self, data: dict) -> Optional[AgentEvent]:
+        message = data.get("message", {})
+        content = message.get("content", [])
+
+        if not isinstance(content, list):
+            return None
+
+        # Return the first meaningful content block
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type", "")
+
+            if block_type == "text":
+                text = block.get("text", "")
+                if text:
+                    return AgentEvent(Agent.CLAUDE, ActionType.TEXT_DELTA,
+                                      text[:400], session_id=self._session_id)
+
+            elif block_type == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {})
+                inp_str = _summarize_tool_input(name, inp)
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  f"{name} {inp_str}", session_id=self._session_id)
+
+            elif block_type == "thinking":
+                text = block.get("thinking", "")
+                if text:
+                    return AgentEvent(Agent.CLAUDE, ActionType.THINKING,
+                                      text[:200], session_id=self._session_id)
+
+        return None
+
+    def _parse_user(self, data: dict) -> Optional[AgentEvent]:
+        message = data.get("message", {})
+        content = message.get("content", [])
+
+        if not isinstance(content, list):
+            return None
+
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "tool_result":
+                result_content = block.get("content", "")
+                is_error = block.get("is_error", False)
+                if is_error:
+                    text = result_content if isinstance(result_content, str) else str(result_content)[:100]
+                    return AgentEvent(Agent.CLAUDE, ActionType.ERROR,
+                                      f"Tool error: {text[:150]}", session_id=self._session_id)
+                if isinstance(result_content, str) and result_content.strip():
+                    return AgentEvent(Agent.CLAUDE, ActionType.TOOL_RESULT,
+                                      result_content[:200], session_id=self._session_id)
+
+        return None
+
+    def _parse_stream_event(self, data: dict) -> Optional[AgentEvent]:
+        event = data.get("event", {})
+        event_type = event.get("type", "")
+
+        if event_type == "content_block_delta":
+            delta = event.get("delta", {})
+            dt = delta.get("type", "")
+            if dt == "text_delta":
+                return AgentEvent(Agent.CLAUDE, ActionType.TEXT_DELTA,
+                                  delta.get("text", ""), session_id=self._session_id)
+            elif dt == "thinking_delta":
+                return AgentEvent(Agent.CLAUDE, ActionType.THINKING,
+                                  delta.get("thinking", ""), session_id=self._session_id)
+            elif dt == "input_json_delta":
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  delta.get("partial_json", ""), session_id=self._session_id)
+            return None
+
+        elif event_type == "content_block_start":
+            block = event.get("content_block", {})
+            bt = block.get("type", "")
+            if bt == "tool_use":
+                return AgentEvent(Agent.CLAUDE, ActionType.TOOL_USE,
+                                  f"Calling {block.get('name', '?')}",
+                                  session_id=self._session_id)
+            elif bt == "thinking":
+                return AgentEvent(Agent.CLAUDE, ActionType.THINKING,
+                                  "Thinking...", session_id=self._session_id)
+            return None
+
+        elif event_type == "message_start":
+            msg = event.get("message", {})
+            model = msg.get("model", "")
+            if model:
+                return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_START,
+                                  f"Response ({model})", session_id=self._session_id)
+            return None
+
+        elif event_type == "message_delta":
+            delta = event.get("delta", {})
+            stop = delta.get("stop_reason", "")
+            if stop:
+                return AgentEvent(Agent.CLAUDE, ActionType.MESSAGE_STOP,
+                                  stop, session_id=self._session_id)
+            return None
+
+        return None
+
+    def _parse_result(self, data: dict) -> Optional[AgentEvent]:
+        subtype = data.get("subtype", "")
+
+        if subtype == "success":
+            cost = data.get("total_cost_usd", 0)
+            turns = data.get("num_turns", 0)
+            duration = data.get("duration_ms", 0) / 1000
+            usage = data.get("usage", {})
+            inp = usage.get("input_tokens", 0)
+            out = usage.get("output_tokens", 0)
+
+            parts = []
+            if turns:
+                parts.append(f"{turns} turns")
+            if cost:
+                parts.append(f"${cost:.4f}")
+            if duration:
+                parts.append(f"{duration:.1f}s")
+            if inp or out:
+                parts.append(f"{inp:,}+{out:,} tok")
+
+            return AgentEvent(
+                Agent.CLAUDE, ActionType.RESULT, " | ".join(parts),
+                session_id=self._session_id,
+                metadata={"total_cost_usd": cost, "num_turns": turns},
+            )
+
+        elif subtype.startswith("error"):
+            errors = data.get("errors", [])
+            msg = ", ".join(errors) if errors else subtype
+            return AgentEvent(Agent.CLAUDE, ActionType.ERROR, msg,
+                              session_id=self._session_id)
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Codex CLI JSONL parser (codex exec --json)
+# ---------------------------------------------------------------------------
 
 class CodexJSONLParser(BaseParser):
-    """Parse Codex CLI JSONL output into AgentEvents.
+    """Parse Codex CLI --json JSONL output.
 
-    Each line is a complete JSON object with a 'type' field.
+    For: codex exec --json "task" | agentstream
+    Each line is a JSON object with a 'type' field containing dots.
     """
+
+    def __init__(self):
+        self._thread_id: str = ""
 
     def parse_line(self, line: str) -> Optional[AgentEvent]:
         line = line.strip()
@@ -133,12 +412,14 @@ class CodexJSONLParser(BaseParser):
         etype = data.get("type", "unknown")
 
         if etype == "thread.started":
-            tid = data.get("thread_id", "")
-            short_id = tid[:8] if tid else "?"
-            return AgentEvent(Agent.CODEX, ActionType.THREAD_START, f"Thread {short_id}")
+            self._thread_id = data.get("thread_id", "")
+            short_id = self._thread_id[:8] if self._thread_id else "?"
+            return AgentEvent(Agent.CODEX, ActionType.THREAD_START,
+                              f"Thread {short_id}", session_id=self._thread_id)
 
         elif etype == "turn.started":
-            return AgentEvent(Agent.CODEX, ActionType.TURN_START, "New turn")
+            return AgentEvent(Agent.CODEX, ActionType.TURN_START,
+                              "New turn", session_id=self._thread_id)
 
         elif etype == "turn.completed":
             usage = data.get("usage", {})
@@ -149,40 +430,52 @@ class CodexJSONLParser(BaseParser):
             if cached:
                 parts.append(f"{cached:,} cached")
             parts.append(f"{out:,} out")
-            return AgentEvent(Agent.CODEX, ActionType.TURN_COMPLETE, " / ".join(parts))
+            return AgentEvent(Agent.CODEX, ActionType.TURN_COMPLETE,
+                              " / ".join(parts), session_id=self._thread_id,
+                              metadata={"usage": usage})
 
         elif etype == "turn.failed":
             error = data.get("error", {})
             msg = error.get("message", "Unknown failure")
-            return AgentEvent(Agent.CODEX, ActionType.TURN_FAILED, msg)
+            return AgentEvent(Agent.CODEX, ActionType.TURN_FAILED,
+                              msg, session_id=self._thread_id)
 
         elif etype in ("item.started", "item.updated", "item.completed"):
             return self._parse_item(etype, data.get("item", {}))
 
         elif etype == "error":
             msg = data.get("message", data.get("error", str(data)[:80]))
-            return AgentEvent(Agent.CODEX, ActionType.ERROR, str(msg))
+            # Skip transient reconnection notices
+            if "Reconnecting" in str(msg):
+                return None
+            return AgentEvent(Agent.CODEX, ActionType.ERROR,
+                              str(msg), session_id=self._thread_id)
 
-        else:
-            return AgentEvent(Agent.CODEX, ActionType.UNKNOWN, etype)
+        return None
 
     def _parse_item(self, event_type: str, item: dict) -> Optional[AgentEvent]:
-        item_type = item.get("type", "unknown")
+        # Handle both old (item_type) and new (type) field names
+        item_type = item.get("type", item.get("item_type", "unknown"))
         is_start = "started" in event_type
         is_complete = "completed" in event_type
+
+        # Normalize old "assistant_message" to new "agent_message"
+        if item_type == "assistant_message":
+            item_type = "agent_message"
 
         if item_type == "agent_message":
             text = item.get("text", "")
             if text:
-                # Truncate long messages for display
-                display = text[:300] + ("..." if len(text) > 300 else "")
-                return AgentEvent(Agent.CODEX, ActionType.AGENT_MESSAGE, display)
+                display = text[:400] + ("..." if len(text) > 400 else "")
+                return AgentEvent(Agent.CODEX, ActionType.AGENT_MESSAGE,
+                                  display, session_id=self._thread_id)
             return None
 
         elif item_type == "command_execution":
             cmd = item.get("command", "")
             if is_start and cmd:
-                return AgentEvent(Agent.CODEX, ActionType.COMMAND, cmd)
+                return AgentEvent(Agent.CODEX, ActionType.COMMAND,
+                                  cmd, session_id=self._thread_id)
             elif is_complete:
                 exit_code = item.get("exit_code")
                 output = item.get("aggregated_output", "")
@@ -190,49 +483,76 @@ class CodexJSONLParser(BaseParser):
                     snippet = output[:120] if output else ""
                     return AgentEvent(
                         Agent.CODEX, ActionType.ERROR,
-                        f"exit {exit_code}: {cmd} {snippet}".strip()
+                        f"exit {exit_code}: {cmd} {snippet}".strip(),
+                        session_id=self._thread_id,
                     )
                 elif output:
                     snippet = output.strip()[:150]
-                    return AgentEvent(Agent.CODEX, ActionType.COMMAND, f"{cmd} -> {snippet}")
+                    return AgentEvent(Agent.CODEX, ActionType.COMMAND,
+                                      f"{cmd} -> {snippet}",
+                                      session_id=self._thread_id)
             return None
 
         elif item_type == "file_change":
             changes = item.get("changes", [])
-            paths = [c.get("path", "?") for c in changes[:4]]
-            summary = ", ".join(paths)
+            parts = []
+            for c in changes[:4]:
+                path = c.get("path", "?")
+                kind = c.get("kind", "")
+                prefix = {"add": "+", "delete": "-", "update": "~"}.get(kind, "")
+                parts.append(f"{prefix}{path}")
+            summary = ", ".join(parts)
             if len(changes) > 4:
                 summary += f" +{len(changes) - 4} more"
-            return AgentEvent(Agent.CODEX, ActionType.FILE_CHANGE, summary)
+            return AgentEvent(Agent.CODEX, ActionType.FILE_CHANGE,
+                              summary, session_id=self._thread_id)
 
         elif item_type == "reasoning":
-            summary = item.get("summary", "")
-            content = item.get("content", "")
-            text = summary or content
+            text = item.get("text", item.get("summary", ""))
             if text:
-                return AgentEvent(Agent.CODEX, ActionType.REASONING, text[:200])
+                return AgentEvent(Agent.CODEX, ActionType.REASONING,
+                                  text[:200], session_id=self._thread_id)
             return None
 
         elif item_type == "mcp_tool_call":
             server = item.get("server", "?")
             tool = item.get("tool", "?")
             status = item.get("status", "")
-            return AgentEvent(Agent.CODEX, ActionType.MCP_TOOL, f"{server}/{tool} ({status})")
+            return AgentEvent(Agent.CODEX, ActionType.MCP_TOOL,
+                              f"{server}/{tool} ({status})",
+                              session_id=self._thread_id)
 
         elif item_type == "web_search":
             query = item.get("query", "")
-            return AgentEvent(Agent.CODEX, ActionType.WEB_SEARCH, query)
+            return AgentEvent(Agent.CODEX, ActionType.WEB_SEARCH,
+                              query, session_id=self._thread_id)
 
         elif item_type == "error":
             msg = item.get("text", item.get("message", "Unknown error"))
-            return AgentEvent(Agent.CODEX, ActionType.ERROR, str(msg))
+            return AgentEvent(Agent.CODEX, ActionType.ERROR,
+                              str(msg), session_id=self._thread_id)
 
-        else:
-            return None  # Skip unknown item types quietly
+        return None
 
+
+# ---------------------------------------------------------------------------
+# Auto-detect parser
+# ---------------------------------------------------------------------------
 
 class AutoDetectParser(BaseParser):
-    """Auto-detects Claude SSE vs Codex JSONL from the first meaningful line."""
+    """Auto-detects format from the first meaningful line.
+
+    Distinguishes:
+    - Claude API SSE: lines start with 'event:' or 'data:'
+    - Claude CLI JSONL: JSON with type in (system, assistant, user, result, stream_event, ...)
+    - Codex CLI JSONL: JSON with type containing dots (thread.started, turn.started, ...)
+    """
+
+    CLAUDE_CLI_TYPES = frozenset({
+        "system", "assistant", "user", "result", "stream_event",
+        "tool_progress", "tool_use_summary", "auth_status",
+        "rate_limit_event", "prompt_suggestion",
+    })
 
     def __init__(self):
         self._delegate: Optional[BaseParser] = None
@@ -242,27 +562,74 @@ class AutoDetectParser(BaseParser):
             stripped = line.strip()
             if not stripped:
                 return None
+
+            # SSE format (Claude API)
             if stripped.startswith("event:") or stripped.startswith("data:"):
                 self._delegate = ClaudeSSEParser()
+
+            # JSON format - distinguish Claude CLI vs Codex
             elif stripped.startswith("{"):
-                self._delegate = CodexJSONLParser()
+                try:
+                    data = json.loads(stripped)
+                    etype = data.get("type", "")
+                    if "." in etype:
+                        self._delegate = CodexJSONLParser()
+                    elif etype in self.CLAUDE_CLI_TYPES:
+                        self._delegate = ClaudeCLIParser()
+                    else:
+                        # Default to Codex if has "item" field, Claude CLI otherwise
+                        if "item" in data or "thread_id" in data:
+                            self._delegate = CodexJSONLParser()
+                        else:
+                            self._delegate = ClaudeCLIParser()
+                except json.JSONDecodeError:
+                    return None
             else:
-                return None  # Can't detect yet
+                return None
 
         return self._delegate.parse_line(line)
 
     @property
-    def detected_agent(self) -> Optional[str]:
+    def detected_format(self) -> Optional[str]:
         if isinstance(self._delegate, ClaudeSSEParser):
-            return "claude"
+            return "claude-sse"
+        elif isinstance(self._delegate, ClaudeCLIParser):
+            return "claude-cli"
         elif isinstance(self._delegate, CodexJSONLParser):
             return "codex"
         return None
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _summarize_tool_input(name: str, inp: dict) -> str:
+    """Create a short summary of tool input for display."""
+    if not inp:
+        return ""
+    # Common Claude Code tool patterns
+    if name in ("Read", "Glob", "Grep"):
+        path = inp.get("file_path", inp.get("path", inp.get("pattern", "")))
+        return str(path)[:80] if path else json.dumps(inp)[:80]
+    elif name in ("Edit", "Write"):
+        path = inp.get("file_path", "")
+        return str(path)[:80] if path else json.dumps(inp)[:80]
+    elif name == "Bash":
+        cmd = inp.get("command", "")
+        return str(cmd)[:80] if cmd else json.dumps(inp)[:80]
+    elif name == "Task":
+        prompt = inp.get("prompt", inp.get("description", ""))
+        return str(prompt)[:80] if prompt else json.dumps(inp)[:80]
+    else:
+        return json.dumps(inp)[:80]
+
+
 def create_parser(agent_type: str) -> BaseParser:
     """Create a parser for the given agent type."""
     if agent_type == "claude":
+        return ClaudeCLIParser()
+    elif agent_type == "claude-sse":
         return ClaudeSSEParser()
     elif agent_type == "codex":
         return CodexJSONLParser()

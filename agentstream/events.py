@@ -15,33 +15,36 @@ class Agent(str, Enum):
 class ActionType(str, Enum):
     # Common
     TEXT = "text"
+    TEXT_DELTA = "text_delta"
     ERROR = "error"
 
     # Lifecycle
-    STREAM_START = "stream_start"
+    STREAM_START = "stream"
     STREAM_END = "stream_end"
+    INIT = "init"
+    RESULT = "result"
 
     # Claude
     MESSAGE_START = "msg_start"
     MESSAGE_STOP = "msg_stop"
-    CONTENT_START = "content_start"
-    CONTENT_STOP = "content_stop"
-    TEXT_DELTA = "text"
     TOOL_USE = "tool_use"
+    TOOL_RESULT = "tool_result"
     THINKING = "thinking"
     PING = "ping"
+    COMPACT = "compact"
+    TASK_UPDATE = "task"
 
     # Codex
-    THREAD_START = "thread_start"
-    TURN_START = "turn_start"
+    THREAD_START = "thread"
+    TURN_START = "turn"
     TURN_COMPLETE = "turn_done"
-    TURN_FAILED = "turn_failed"
+    TURN_FAILED = "turn_fail"
     COMMAND = "command"
-    FILE_CHANGE = "file_change"
+    FILE_CHANGE = "file_edit"
     REASONING = "reasoning"
     AGENT_MESSAGE = "message"
     MCP_TOOL = "mcp_tool"
-    WEB_SEARCH = "web_search"
+    WEB_SEARCH = "search"
 
     # Meta
     UNKNOWN = "unknown"
@@ -53,4 +56,17 @@ class AgentEvent:
     action: ActionType
     content: str
     timestamp: datetime = field(default_factory=datetime.now)
+    session_id: str = ""
     metadata: Optional[dict] = field(default_factory=dict)
+
+
+@dataclass
+class SessionInfo:
+    """Tracks a detected stream/session in the sidebar."""
+    session_id: str
+    agent: Agent
+    display_name: str
+    visible: bool = True
+    event_count: int = 0
+    status: str = "active"
+    total_cost: float = 0.0
