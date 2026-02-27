@@ -24,7 +24,17 @@ For development: `git clone` then `uv pip install -e .`
 
 ## Usage
 
-### Pipe from CLI tools (most common)
+### Watch mode (default)
+
+```bash
+agentstream
+```
+
+Auto-discovers active Claude Code sessions under `~/.claude/projects/` and streams their events live — including subagent sessions. Each session gets a unique color and is labeled by its Claude slug name in the sidebar.
+
+This is the default when running on a TTY. Use `--watch` to be explicit.
+
+### Pipe from CLI tools
 
 ```bash
 # Claude Code
@@ -78,6 +88,9 @@ Click sessions in the sidebar to toggle individual stream visibility.
 
 ## Features
 
+- **Watch mode** - Auto-discovers active Claude sessions (including subagents) and streams them live
+- **Per-session colors** - Each session gets a unique color from an 8-color palette for visual distinction
+- **Session naming** - Sessions labeled by their Claude slug name (e.g. "hummingbird", "dragon") instead of UUIDs
 - **Auto-detection** - Distinguishes Claude CLI JSONL, Codex JSONL, and Claude API SSE formats from the first line
 - **Color-coded agents** - Claude in violet, Codex in green, distinct colors per action type
 - **Session tracking** - Each agent session gets a sidebar entry with event counts
