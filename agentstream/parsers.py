@@ -691,6 +691,167 @@ class ClaudeInteractiveParser(BaseParser):
 
 
 # ---------------------------------------------------------------------------
+# Codex interactive session parser (~/.codex/sessions/ JSONL files)
+# ---------------------------------------------------------------------------
+
+class CodexInteractiveParser(BaseParser):
+    """Parse Codex interactive session JSONL files.
+
+    For: tailing ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+    Each line is a JSON object with 'type' in: session_meta, event_msg,
+    response_item, turn_context.  Data is nested inside a 'payload' object.
+    """
+
+    def __init__(self):
+        self._session_id: str = ""
+        self._model: str = ""
+        self._cwd_project: str = ""
+
+    def parse_line(self, line: str) -> Optional[AgentEvent]:
+        line = line.strip()
+        if not line:
+            return None
+
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return None  # Silently skip malformed lines in watch mode
+
+        etype = data.get("type", "")
+        payload = data.get("payload", {})
+
+        if etype == "session_meta":
+            event = self._parse_session_meta(payload)
+        elif etype == "event_msg":
+            event = self._parse_event_msg(payload)
+        elif etype == "response_item":
+            event = self._parse_response_item(payload)
+        elif etype == "turn_context":
+            # Extract model for tracking
+            model = payload.get("model", "")
+            if model:
+                self._model = model
+            return None
+        else:
+            return None
+
+        # Attach cwd_project to all events so the app can label the session
+        if event and self._cwd_project:
+            if event.metadata is None:
+                event.metadata = {}
+            event.metadata["cwd_project"] = self._cwd_project
+
+        return event
+
+    def _parse_session_meta(self, payload: dict) -> Optional[AgentEvent]:
+        session_id = payload.get("id", "")
+        if session_id:
+            self._session_id = session_id
+
+        cwd = payload.get("cwd", "")
+        version = payload.get("cli_version", "")
+        provider = payload.get("model_provider", "")
+
+        # Extract project name from cwd (last path segment)
+        if cwd:
+            self._cwd_project = cwd.rstrip("/").rsplit("/", 1)[-1] if "/" in cwd else cwd
+
+        parts = [provider or "codex"]
+        if version:
+            parts.append(f"v{version}")
+        if cwd:
+            parts.append(cwd)
+
+        return AgentEvent(
+            Agent.CODEX, ActionType.INIT,
+            " | ".join(parts), session_id=self._session_id,
+        )
+
+    def _parse_event_msg(self, payload: dict) -> Optional[AgentEvent]:
+        event_type = payload.get("type", "")
+
+        if event_type == "task_started":
+            return AgentEvent(Agent.CODEX, ActionType.TURN_START,
+                              "New turn", session_id=self._session_id)
+
+        elif event_type == "user_message":
+            text = payload.get("message", "")
+            if text:
+                return AgentEvent(Agent.CODEX, ActionType.USER_PROMPT,
+                                  str(text)[:200], session_id=self._session_id)
+            return None
+
+        elif event_type == "agent_reasoning":
+            text = payload.get("text", "")
+            if text:
+                return AgentEvent(Agent.CODEX, ActionType.REASONING,
+                                  str(text)[:200], session_id=self._session_id)
+            return None
+
+        elif event_type == "agent_message":
+            text = payload.get("message", "")
+            if text:
+                return AgentEvent(Agent.CODEX, ActionType.AGENT_MESSAGE,
+                                  str(text)[:400], session_id=self._session_id)
+            return None
+
+        elif event_type == "task_complete":
+            last_msg = payload.get("last_agent_message", "")
+            snippet = str(last_msg)[:200] if last_msg else "Done"
+            return AgentEvent(Agent.CODEX, ActionType.TURN_COMPLETE,
+                              snippet, session_id=self._session_id)
+
+        elif event_type == "token_count":
+            return None  # Too noisy
+
+        return None
+
+    def _parse_response_item(self, payload: dict) -> Optional[AgentEvent]:
+        item_type = payload.get("type", "")
+
+        if item_type == "function_call":
+            name = payload.get("name", "")
+            args_raw = payload.get("arguments", "")
+            cmd = _extract_codex_command(args_raw)
+            display = f"{name} {cmd}" if name else str(cmd)
+            return AgentEvent(Agent.CODEX, ActionType.COMMAND,
+                              display[:200], session_id=self._session_id)
+
+        elif item_type == "function_call_output":
+            output = payload.get("output", "")
+            return AgentEvent(Agent.CODEX, ActionType.TOOL_RESULT,
+                              str(output)[:200], session_id=self._session_id)
+
+        elif item_type == "custom_tool_call":
+            name = payload.get("name", payload.get("tool", "?"))
+            return AgentEvent(Agent.CODEX, ActionType.TOOL_USE,
+                              name, session_id=self._session_id)
+
+        elif item_type == "custom_tool_call_output":
+            output = payload.get("output", "")
+            return AgentEvent(Agent.CODEX, ActionType.TOOL_RESULT,
+                              str(output)[:200], session_id=self._session_id)
+
+        elif item_type == "reasoning":
+            # summary is a list of objects with 'text' fields
+            summary = payload.get("summary", [])
+            if isinstance(summary, list) and summary:
+                texts = [s.get("text", "") for s in summary if isinstance(s, dict)]
+                text = " ".join(t for t in texts if t)
+            else:
+                text = str(summary) if summary else ""
+            if text:
+                return AgentEvent(Agent.CODEX, ActionType.REASONING,
+                                  text[:200], session_id=self._session_id)
+            return None
+
+        elif item_type == "message":
+            return None  # System/developer noise
+
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Auto-detect parser
 # ---------------------------------------------------------------------------
 
@@ -780,6 +941,19 @@ def _summarize_tool_input(name: str, inp: dict) -> str:
         return json.dumps(inp)[:80]
 
 
+def _extract_codex_command(args_raw: str | dict) -> str:
+    """Extract a command string from Codex function_call arguments."""
+    if isinstance(args_raw, str):
+        try:
+            args_data = json.loads(args_raw)
+            return str(args_data.get("cmd", args_data.get("command", args_raw[:200])))
+        except (json.JSONDecodeError, AttributeError):
+            return args_raw[:200]
+    elif isinstance(args_raw, dict):
+        return str(args_raw.get("cmd", args_raw.get("command", str(args_raw)[:200])))
+    return str(args_raw)[:200]
+
+
 def create_parser(agent_type: str) -> BaseParser:
     """Create a parser for the given agent type."""
     if agent_type == "claude":
@@ -790,5 +964,7 @@ def create_parser(agent_type: str) -> BaseParser:
         return ClaudeInteractiveParser()
     elif agent_type == "codex":
         return CodexJSONLParser()
+    elif agent_type == "codex-interactive":
+        return CodexInteractiveParser()
     else:
         return AutoDetectParser()

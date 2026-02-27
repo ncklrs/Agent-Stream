@@ -240,30 +240,42 @@ async def exec_stream(agent_type: str, cmd: str) -> AsyncGenerator[AgentEvent, N
 # ---------------------------------------------------------------------------
 
 _CLAUDE_PROJECTS_DIR = pathlib.Path.home() / ".claude" / "projects"
+_CODEX_SESSIONS_DIR = pathlib.Path.home() / ".codex" / "sessions"
 _SCAN_INTERVAL = 5.0       # seconds between discovery scans
 _SESSION_MAX_AGE = 600.0   # 10 min — ignore files older than this
 _TAIL_IDLE_TIMEOUT = 600.0 # 10 min — stop tailing after no new data
 
 
-def _discover_sessions() -> list[pathlib.Path]:
-    """Find active JSONL session files under ~/.claude/projects/."""
-    if not _CLAUDE_PROJECTS_DIR.is_dir():
-        return []
+def _discover_sessions() -> list[tuple[pathlib.Path, str]]:
+    """Find active JSONL session files for Claude and Codex.
 
+    Returns (path, parser_type) tuples.
+    """
     cutoff = time.time() - _SESSION_MAX_AGE
-    found: list[pathlib.Path] = []
+    found: list[tuple[pathlib.Path, str]] = []
 
-    for project_dir in _CLAUDE_PROJECTS_DIR.iterdir():
-        if not project_dir.is_dir():
-            continue
-        # Top-level session files: <uuid>.jsonl
-        for f in project_dir.glob("*.jsonl"):
-            if f.stat().st_mtime >= cutoff:
-                found.append(f)
-        # Subagent files: <uuid>/subagents/agent-*.jsonl
-        for f in project_dir.glob("*/subagents/agent-*.jsonl"):
-            if f.stat().st_mtime >= cutoff:
-                found.append(f)
+    # Claude: ~/.claude/projects/<project>/*.jsonl
+    if _CLAUDE_PROJECTS_DIR.is_dir():
+        for project_dir in _CLAUDE_PROJECTS_DIR.iterdir():
+            if not project_dir.is_dir():
+                continue
+            # Top-level session files: <uuid>.jsonl
+            for f in project_dir.glob("*.jsonl"):
+                if f.stat().st_mtime >= cutoff:
+                    found.append((f, "claude-interactive"))
+            # Subagent files: <uuid>/subagents/agent-*.jsonl
+            for f in project_dir.glob("*/subagents/agent-*.jsonl"):
+                if f.stat().st_mtime >= cutoff:
+                    found.append((f, "claude-interactive"))
+
+    # Codex: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
+    if _CODEX_SESSIONS_DIR.is_dir():
+        for f in _CODEX_SESSIONS_DIR.rglob("*.jsonl"):
+            try:
+                if f.stat().st_mtime >= cutoff:
+                    found.append((f, "codex-interactive"))
+            except OSError:
+                continue
 
     return found
 
@@ -271,10 +283,14 @@ def _discover_sessions() -> list[pathlib.Path]:
 def _extract_project_name(session_path: pathlib.Path) -> str:
     """Extract a readable project name from the session file path.
 
-    The project dir is like `-Users-nick-Dev-Agent-Stream`.
-    We take the last path segment after the final `-Dev-` or just the last part.
+    Claude: project dir like `-Users-nick-Dev-Agent-Stream` → last segment.
+    Codex: path like ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl → filename stem.
     """
-    # The project dir is either the parent (top-level) or grandparent (subagent)
+    # Codex session: use filename stem (e.g. "rollout-2026-02-27T12-30-16-...")
+    if ".codex" in session_path.parts:
+        return session_path.stem[:20]
+
+    # Claude: the project dir is either the parent (top-level) or grandparent (subagent)
     if session_path.parent.name == "subagents":
         project_dir = session_path.parent.parent.parent
     else:
@@ -297,9 +313,10 @@ async def _tail_session_file(
     path: pathlib.Path,
     queue: asyncio.Queue,
     project_name: str,
+    parser_type: str = "claude-interactive",
 ) -> None:
     """Tail a session JSONL file and push parsed events into the queue."""
-    parser = create_parser("claude-interactive")
+    parser = create_parser(parser_type)
 
     # Notify discovery
     await queue.put(AgentEvent(
@@ -330,7 +347,14 @@ async def _tail_session_file(
                 if event:
                     if event.metadata is None:
                         event.metadata = {}
-                    event.metadata["project_name"] = project_name
+                    # Prefer cwd_project from parser (e.g. Codex session_meta)
+                    if event.metadata.get("cwd_project"):
+                        event.metadata["project_name"] = event.metadata["cwd_project"]
+                    else:
+                        event.metadata["project_name"] = project_name
+                    # Ensure session_id is set (use filename as fallback)
+                    if not event.session_id:
+                        event.session_id = path.stem
                     await queue.put(event)
 
     except asyncio.CancelledError:
@@ -343,9 +367,9 @@ async def _tail_session_file(
 
 
 async def watch_stream() -> AsyncGenerator[AgentEvent, None]:
-    """Auto-discover and tail active Claude interactive sessions."""
+    """Auto-discover and tail active Claude and Codex interactive sessions."""
     yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_START,
-                     "Watch mode — scanning for active Claude sessions")
+                     "Watch mode — scanning for active sessions")
 
     queue: asyncio.Queue = asyncio.Queue()
     # Map path -> asyncio.Task to avoid duplicate tails
@@ -361,12 +385,12 @@ async def watch_stream() -> AsyncGenerator[AgentEvent, None]:
                                  "Scanning for active sessions...")
 
             # Spawn tail tasks for newly discovered sessions
-            for path in sessions:
+            for path, parser_type in sessions:
                 key = str(path)
                 if key not in active_tails or active_tails[key].done():
                     project_name = _extract_project_name(path)
                     task = asyncio.create_task(
-                        _tail_session_file(path, queue, project_name)
+                        _tail_session_file(path, queue, project_name, parser_type)
                     )
                     active_tails[key] = task
 

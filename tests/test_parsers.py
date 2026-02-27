@@ -10,6 +10,7 @@ from agentstream.parsers import (
     ClaudeSSEParser,
     ClaudeInteractiveParser,
     CodexJSONLParser,
+    CodexInteractiveParser,
     AutoDetectParser,
     create_parser,
 )
@@ -625,6 +626,295 @@ class TestClaudeInteractiveParser:
 
 
 # ---------------------------------------------------------------------------
+# Codex Interactive Parser
+# ---------------------------------------------------------------------------
+
+class TestCodexInteractiveParser:
+
+    def test_session_meta(self):
+        """Init event extracts provider, version, and cwd."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "timestamp": "2026-02-27T17:30:21.663Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "019ca026-b34c-7390",
+                "cwd": "/Users/nick/Dev/my-project",
+                "cli_version": "0.106.0",
+                "model_provider": "openai",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.agent == Agent.CODEX
+        assert ev.action == ActionType.INIT
+        assert "openai" in ev.content
+        assert "v0.106.0" in ev.content
+        assert "/Users/nick/Dev/my-project" in ev.content
+        assert ev.session_id == "019ca026-b34c-7390"
+
+    def test_user_message(self):
+        """User prompt is extracted from event_msg/user_message."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "event_msg",
+            "payload": {
+                "type": "user_message",
+                "message": "Fix the login bug",
+                "images": [],
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.USER_PROMPT
+        assert "Fix the login bug" in ev.content
+
+    def test_agent_message(self):
+        """Agent text is extracted from event_msg/agent_message."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_message",
+                "message": "I'll check the current branch now.",
+                "phase": "commentary",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.AGENT_MESSAGE
+        assert "check the current branch" in ev.content
+
+    def test_agent_reasoning(self):
+        """Reasoning text from event_msg/agent_reasoning."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "event_msg",
+            "payload": {
+                "type": "agent_reasoning",
+                "text": "**Preparing to get current branch**",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.REASONING
+        assert "Preparing to get current branch" in ev.content
+
+    def test_function_call(self):
+        """Command extraction from response_item/function_call arguments."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "exec_command",
+                "arguments": '{"cmd":"git branch --show-current","workdir":"/tmp"}',
+                "call_id": "call_abc123",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.COMMAND
+        assert "exec_command" in ev.content
+        assert "git branch --show-current" in ev.content
+
+    def test_function_call_output(self):
+        """Tool result from response_item/function_call_output."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call_abc123",
+                "output": "main\n",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_RESULT
+        assert "main" in ev.content
+
+    def test_task_started(self):
+        """Turn lifecycle: task_started → TURN_START."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": "turn-abc",
+                "model_context_window": 258400,
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TURN_START
+        assert "New turn" in ev.content
+
+    def test_task_complete(self):
+        """Turn lifecycle: task_complete → TURN_COMPLETE."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "turn-abc",
+                "last_agent_message": "`MT-533-portal-components`",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TURN_COMPLETE
+        assert "MT-533" in ev.content
+
+    def test_token_count_skipped(self):
+        """token_count events are silently skipped."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "token_count", "info": None},
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_response_item_message_skipped(self):
+        """System/developer message response_items are skipped."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "system prompt"}],
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+
+    def test_turn_context_extracts_model(self):
+        """turn_context is used for model tracking only (returns None)."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "turn_context",
+            "payload": {
+                "turn_id": "turn-abc",
+                "model": "gpt-5.3-codex",
+                "cwd": "/tmp",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is None
+        # Model should be tracked internally
+        assert p._model == "gpt-5.3-codex"
+
+    def test_reasoning_response_item(self):
+        """reasoning response_item extracts summary text."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [
+                    {"type": "summary_text", "text": "Analyzing codebase"},
+                ],
+                "content": None,
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.REASONING
+        assert "Analyzing codebase" in ev.content
+
+    def test_custom_tool_call(self):
+        """custom_tool_call maps to TOOL_USE."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "read_file",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_USE
+        assert "read_file" in ev.content
+
+    def test_custom_tool_call_output(self):
+        """custom_tool_call_output maps to TOOL_RESULT."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "output": "file contents here",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.action == ActionType.TOOL_RESULT
+        assert "file contents" in ev.content
+
+    def test_bad_json_silently_skipped(self):
+        """Interactive parser silently skips bad JSON."""
+        p = CodexInteractiveParser()
+        ev = p.parse_line("{broken json")
+        assert ev is None
+
+    def test_empty_line_ignored(self):
+        p = CodexInteractiveParser()
+        assert p.parse_line("") is None
+        assert p.parse_line("   ") is None
+
+    def test_cwd_project_in_metadata(self):
+        """Project name is derived from cwd and attached to event metadata."""
+        p = CodexInteractiveParser()
+        line = json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "id": "sess-123",
+                "cwd": "/Users/nick/Dev/my-project",
+                "cli_version": "0.106.0",
+            },
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.metadata["cwd_project"] == "my-project"
+
+    def test_cwd_project_persists_across_events(self):
+        """Once cwd_project is set from session_meta, it's on all events."""
+        p = CodexInteractiveParser()
+        # First: session_meta sets cwd_project
+        p.parse_line(json.dumps({
+            "type": "session_meta",
+            "payload": {
+                "id": "sess-123",
+                "cwd": "/Users/nick/Dev/my-project",
+                "cli_version": "0.1.0",
+            },
+        }))
+        # Second: a different event should also have cwd_project
+        ev = p.parse_line(json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "hi"},
+        }))
+        assert ev is not None
+        assert ev.metadata["cwd_project"] == "my-project"
+
+    def test_session_id_tracking(self):
+        """Session ID from session_meta persists to subsequent events."""
+        p = CodexInteractiveParser()
+        p.parse_line(json.dumps({
+            "type": "session_meta",
+            "payload": {"id": "sess-abc", "cwd": "/tmp"},
+        }))
+        ev = p.parse_line(json.dumps({
+            "type": "event_msg",
+            "payload": {"type": "user_message", "message": "hello"},
+        }))
+        assert ev.session_id == "sess-abc"
+
+
+# ---------------------------------------------------------------------------
 # Auto-detect parser
 # ---------------------------------------------------------------------------
 
@@ -696,6 +986,10 @@ class TestCreateParser:
     def test_codex(self):
         p = create_parser("codex")
         assert isinstance(p, CodexJSONLParser)
+
+    def test_codex_interactive(self):
+        p = create_parser("codex-interactive")
+        assert isinstance(p, CodexInteractiveParser)
 
     def test_auto(self):
         p = create_parser("auto")

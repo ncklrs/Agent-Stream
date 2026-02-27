@@ -30,7 +30,7 @@ For development: `git clone` then `uv pip install -e .`
 agentstream
 ```
 
-Auto-discovers active Claude Code sessions under `~/.claude/projects/` and streams their events live — including subagent sessions. Each session gets a unique color and is labeled by its Claude slug name in the sidebar.
+Auto-discovers active **Claude Code** sessions under `~/.claude/projects/` and **Codex** sessions under `~/.codex/sessions/`, streaming their events live in a unified view. Claude subagent sessions are also detected. Each session gets a unique color and is labeled by its slug name (Claude) or working directory (Codex) in the sidebar.
 
 This is the default when running on a TTY. Use `--watch` to be explicit.
 
@@ -88,9 +88,9 @@ Click sessions in the sidebar to toggle individual stream visibility.
 
 ## Features
 
-- **Watch mode** - Auto-discovers active Claude sessions (including subagents) and streams them live
+- **Watch mode** - Auto-discovers active Claude and Codex sessions (including Claude subagents) and streams them live
 - **Per-session colors** - Each session gets a unique color from an 8-color palette for visual distinction
-- **Session naming** - Sessions labeled by their Claude slug name (e.g. "hummingbird", "dragon") instead of UUIDs
+- **Session naming** - Claude sessions labeled by slug name (e.g. "hummingbird"), Codex sessions by working directory project name
 - **Auto-detection** - Distinguishes Claude CLI JSONL, Codex JSONL, and Claude API SSE formats from the first line
 - **Color-coded agents** - Claude in violet, Codex in green, distinct colors per action type
 - **Session tracking** - Each agent session gets a sidebar entry with event counts
@@ -100,10 +100,12 @@ Click sessions in the sidebar to toggle individual stream visibility.
 
 ## Supported formats
 
-| Source | Command | Format |
-|--------|---------|--------|
+| Source | Command / Path | Format |
+|--------|----------------|--------|
 | Claude Code CLI | `claude -p "..." --output-format stream-json` | JSONL with SDK message types |
+| Claude interactive | `~/.claude/projects/` (watch mode) | JSONL with assistant/user/progress types |
 | Codex CLI | `codex exec --json "..."` | JSONL with dot-separated event types |
+| Codex interactive | `~/.codex/sessions/` (watch mode) | JSONL with payload-wrapped event types |
 | Claude API (raw) | `curl -N .../v1/messages` | Server-Sent Events (SSE) |
 
 ## License
