@@ -36,6 +36,24 @@ AGENT_COLORS: dict[Agent, tuple[str, str]] = {
     Agent.SYSTEM: (SYSTEM_PRIMARY, SYSTEM_DIM),
 }
 
+# Per-session color palette — 8 visually distinct pairs for dark backgrounds
+SESSION_PALETTE: list[tuple[str, str]] = [
+    ("#f472b6", "#db2777"),  # Pink
+    ("#fb923c", "#ea580c"),  # Orange
+    ("#facc15", "#ca8a04"),  # Yellow
+    ("#34d399", "#059669"),  # Emerald
+    ("#22d3ee", "#0891b2"),  # Cyan
+    ("#818cf8", "#6366f1"),  # Indigo
+    ("#c084fc", "#9333ea"),  # Purple
+    ("#fb7185", "#e11d48"),  # Rose
+]
+
+
+def session_color(session_id: str) -> tuple[str, str]:
+    """Deterministic color for a session — hash the ID into the palette."""
+    idx = hash(session_id) % len(SESSION_PALETTE)
+    return SESSION_PALETTE[idx]
+
 # Action-specific content colors (empty = use agent color)
 ACTION_STYLE: dict[ActionType, str] = {
     ActionType.ERROR: "#ef4444",
@@ -107,9 +125,12 @@ SEPARATOR_ACTIONS = frozenset({
 # ---------------------------------------------------------------------------
 
 
-def render_event(event: AgentEvent) -> Text:
-    """Render an AgentEvent as a styled Rich Text line."""
-    primary, dim = AGENT_COLORS.get(event.agent, (SYSTEM_PRIMARY, SYSTEM_DIM))
+def render_event(event: AgentEvent, colors: tuple[str, str] | None = None) -> Text:
+    """Render an AgentEvent as a styled Rich Text line.
+
+    *colors* overrides the agent label color with a per-session ``(primary, dim)`` pair.
+    """
+    primary, dim = colors or AGENT_COLORS.get(event.agent, (SYSTEM_PRIMARY, SYSTEM_DIM))
     icon = ACTION_ICONS.get(event.action, "  ")
     content_color = ACTION_STYLE.get(event.action, "") or primary
 

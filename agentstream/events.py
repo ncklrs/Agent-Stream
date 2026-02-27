@@ -71,3 +71,5 @@ class SessionInfo:
     event_count: int = 0
     status: str = "active"
     total_cost: float = 0.0
+    color: str = ""
+    color_dim: str = ""

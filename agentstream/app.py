@@ -21,6 +21,7 @@ from agentstream.theme import (
     ACCENT, SYSTEM_DIM, SEPARATOR_COLOR,
     CLAUDE_PRIMARY, CLAUDE_DIM, CODEX_PRIMARY, CODEX_DIM,
     BG_DARK, BG_PANEL, BG_BAR, AGENT_COLORS, HELP_CONTENT,
+    session_color,
 )
 from agentstream.streams import demo_stream, stdin_stream, file_stream, exec_stream, watch_stream
 
@@ -56,14 +57,26 @@ class SessionToggle(Static):
     enabled = reactive(True)
     event_count = reactive(0)
 
-    def __init__(self, session_id: str, agent: Agent, display_name: str) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        agent: Agent,
+        display_name: str,
+        color: str = "",
+        color_dim: str = "",
+    ) -> None:
         super().__init__("")
         self.session_id = session_id
         self.agent = agent
         self.display_name = display_name
+        self._color = color
+        self._color_dim = color_dim
 
     def render(self) -> Text:
-        primary, dim = AGENT_COLORS.get(self.agent, (SYSTEM_DIM, SYSTEM_DIM))
+        if self._color:
+            primary, dim = self._color, self._color_dim
+        else:
+            primary, dim = AGENT_COLORS.get(self.agent, (SYSTEM_DIM, SYSTEM_DIM))
         icon = "●" if self.enabled else "○"
         style = f"bold {primary}" if self.enabled else f"dim {dim}"
 
@@ -112,9 +125,12 @@ class Sidebar(Vertical):
         yield Static(" STREAMS", id="sidebar-header")
         yield ScrollableContainer(id="session-container")
 
-    def add_session(self, session_id: str, agent: Agent, display_name: str) -> None:
+    def add_session(
+        self, session_id: str, agent: Agent, display_name: str,
+        color: str = "", color_dim: str = "",
+    ) -> None:
         container = self.query_one("#session-container")
-        toggle = SessionToggle(session_id, agent, display_name)
+        toggle = SessionToggle(session_id, agent, display_name, color, color_dim)
         container.mount(toggle)
 
     def update_session(self, session_id: str, count: int) -> None:
@@ -379,7 +395,14 @@ class AgentStreamApp(App):
         if event.action in SEPARATOR_ACTIONS and self._last_action not in (None, ActionType.STREAM_START):
             log.write(render_separator())
 
-        log.write(render_event(event))
+        # Look up per-session colors (if the session is registered)
+        colors = None
+        if event.session_id and event.session_id in self._sessions:
+            info = self._sessions[event.session_id]
+            if info.color:
+                colors = (info.color, info.color_dim)
+
+        log.write(render_event(event, colors=colors))
         self._last_action = event.action
         self.event_count += 1
 
@@ -420,16 +443,21 @@ class AgentStreamApp(App):
         else:
             name = sid[:8]
 
+        # Assign a deterministic per-session color
+        primary, dim = session_color(sid)
+
         info = SessionInfo(
             session_id=sid,
             agent=agent,
             display_name=name,
+            color=primary,
+            color_dim=dim,
         )
         self._sessions[sid] = info
 
         try:
             sidebar = self.query_one(Sidebar)
-            sidebar.add_session(sid, agent, name)
+            sidebar.add_session(sid, agent, name, primary, dim)
         except Exception:
             pass
 

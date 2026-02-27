@@ -4,6 +4,7 @@ import json
 import pytest
 
 from agentstream.events import Agent, ActionType
+from agentstream.theme import session_color, SESSION_PALETTE
 from agentstream.parsers import (
     ClaudeCLIParser,
     ClaudeSSEParser,
@@ -690,3 +691,27 @@ class TestCreateParser:
     def test_unknown_defaults_to_auto(self):
         p = create_parser("whatever")
         assert isinstance(p, AutoDetectParser)
+
+
+# ---------------------------------------------------------------------------
+# Session color assignment
+# ---------------------------------------------------------------------------
+
+class TestSessionColor:
+
+    def test_deterministic(self):
+        """Same session_id always returns the same color."""
+        c1 = session_color("sess-abc-123")
+        c2 = session_color("sess-abc-123")
+        assert c1 == c2
+
+    def test_returns_palette_pair(self):
+        """Result is always a valid (primary, dim) pair from the palette."""
+        primary, dim = session_color("any-id")
+        assert (primary, dim) in SESSION_PALETTE
+
+    def test_different_ids_can_differ(self):
+        """Different session IDs can map to different colors."""
+        colors = {session_color(f"session-{i}") for i in range(20)}
+        # With 20 different IDs over an 8-color palette, we expect >1 distinct color
+        assert len(colors) > 1
