@@ -549,6 +549,7 @@ class ClaudeInteractiveParser(BaseParser):
 
     def __init__(self):
         self._session_id: str = ""
+        self._slug: str = ""
 
     def parse_line(self, line: str) -> Optional[AgentEvent]:
         line = line.strip()
@@ -567,18 +568,31 @@ class ClaudeInteractiveParser(BaseParser):
         if sid:
             self._session_id = sid
 
+        # Track slug (human-readable session name)
+        slug = data.get("slug", "")
+        if slug:
+            self._slug = slug
+
         if etype == "assistant":
-            return self._parse_assistant(data)
+            event = self._parse_assistant(data)
         elif etype == "user":
-            return self._parse_user(data)
+            event = self._parse_user(data)
         elif etype == "progress":
-            return self._parse_progress(data)
+            event = self._parse_progress(data)
         elif etype == "system":
-            return self._parse_system(data)
+            event = self._parse_system(data)
         elif etype == "file-history-snapshot":
             return None  # Not useful for display
+        else:
+            return None
 
-        return None
+        # Attach slug to event metadata so the app can use it for labeling
+        if event and self._slug:
+            if event.metadata is None:
+                event.metadata = {}
+            event.metadata["slug"] = self._slug
+
+        return event
 
     def _parse_assistant(self, data: dict) -> Optional[AgentEvent]:
         message = data.get("message", {})

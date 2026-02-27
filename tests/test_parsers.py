@@ -599,6 +599,19 @@ class TestClaudeInteractiveParser:
         }))
         assert ev.session_id == "sess-xyz"
 
+    def test_slug_in_metadata(self):
+        """Slug (session name) is extracted into event metadata."""
+        p = ClaudeInteractiveParser()
+        line = json.dumps({
+            "type": "assistant",
+            "sessionId": "s1",
+            "slug": "sparkling-crafting-hummingbird",
+            "message": {"content": [{"type": "text", "text": "hi"}]},
+        })
+        ev = p.parse_line(line)
+        assert ev is not None
+        assert ev.metadata["slug"] == "sparkling-crafting-hummingbird"
+
     def test_empty_line_ignored(self):
         p = ClaudeInteractiveParser()
         assert p.parse_line("") is None

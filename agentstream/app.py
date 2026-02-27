@@ -437,9 +437,14 @@ class AgentStreamApp(App):
         sid = event.session_id
         agent = event.agent
 
-        # Generate display name — prefer project name from watch mode metadata
+        # Generate display name — prefer slug (session name) from Claude data
         if sid.startswith("demo-"):
             name = "Demo"
+        elif event.metadata and event.metadata.get("slug"):
+            # Slugs are like "sparkling-crafting-hummingbird" —
+            # use the last word as it's most distinctive
+            slug = event.metadata["slug"]
+            name = slug.rsplit("-", 1)[-1]
         elif event.metadata and event.metadata.get("project_name"):
             name = event.metadata["project_name"]
         else:
