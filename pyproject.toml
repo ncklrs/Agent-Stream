@@ -26,6 +26,9 @@ dependencies = [
     "textual>=0.40",
 ]
 
+[project.optional-dependencies]
+toolbar = ["rumps>=0.4.0"]
+
 [project.urls]
 Homepage = "https://github.com/ncklrs/Agent-Stream"
 Repository = "https://github.com/ncklrs/Agent-Stream"
@@ -33,6 +36,7 @@ Issues = "https://github.com/ncklrs/Agent-Stream/issues"
 
 [project.scripts]
 agentstream = "agentstream.__main__:main"
+agentstream-toolbar = "agentstream.toolbar:main"
 
 [tool.hatch.version]
 path = "agentstream/__init__.py"

@@ -4,6 +4,7 @@ Usage:
     agentstream                              # Watch mode (auto-discover sessions)
     agentstream --watch                      # Explicit watch mode
     agentstream --demo                       # Demo mode with simulated data
+    agentstream --toolbar                    # macOS menu bar app with notifications
 
     # Pipe from headless CLI tools:
     claude -p "task" --output-format stream-json | agentstream
@@ -37,6 +38,8 @@ def main() -> None:
 examples:
   agentstream                                             Watch active sessions
   agentstream --demo                                      Demo mode
+  agentstream --toolbar                                   macOS menu bar app
+  agentstream --toolbar --demo                            Menu bar with demo data
   claude -p "task" --output-format stream-json \\
     | agentstream                                         Pipe Claude CLI
   codex exec --json "task" | agentstream                  Pipe Codex CLI
@@ -58,6 +61,10 @@ keyboard:
         help="Run with simulated demo data",
     )
     parser.add_argument(
+        "--toolbar", action="store_true",
+        help="Run as macOS menu bar app with notifications (requires: pip install 'agentstream[toolbar]')",
+    )
+    parser.add_argument(
         "--stdin", choices=["claude", "codex", "auto"],
         help="Read stream from stdin (specify agent format or auto-detect)",
     )
@@ -74,6 +81,17 @@ keyboard:
     )
 
     args = parser.parse_args()
+
+    # --- Toolbar mode (macOS menu bar app) ---
+    if args.toolbar:
+        try:
+            from agentstream.toolbar import main as toolbar_main
+            toolbar_main(demo=args.demo)
+        except ImportError as e:
+            print(f"Toolbar requires additional dependencies: {e}", file=sys.stderr)
+            print("Install with: pip install 'agentstream[toolbar]'", file=sys.stderr)
+            sys.exit(1)
+        return
 
     sources: list[tuple[str, object]] = []
 
