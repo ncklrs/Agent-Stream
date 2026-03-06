@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import pathlib
 import platform
+import re
 import subprocess
 import sys
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime
 from typing import Any
 
@@ -71,8 +73,88 @@ def _copy_to_clipboard(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Log persistence
+# ---------------------------------------------------------------------------
+
+_HISTORY_DIR = pathlib.Path.home() / ".agentstream" / "history"
+
+
+def _history_path() -> pathlib.Path:
+    """Return the path for today's history file, creating dirs as needed."""
+    _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    return _HISTORY_DIR / f"{datetime.now().strftime('%Y-%m-%d')}.jsonl"
+
+
+def _save_event(event: AgentEvent) -> None:
+    """Append a single event to today's history file (best-effort)."""
+    try:
+        record = {
+            "timestamp": event.timestamp.isoformat(),
+            "agent": event.agent.value,
+            "action": event.action.value,
+            "content": event.content,
+            "session_id": event.session_id,
+        }
+        if event.metadata:
+            record["metadata"] = {
+                k: v for k, v in event.metadata.items()
+                if isinstance(v, (str, int, float, bool, type(None)))
+            }
+        with open(_history_path(), "a") as f:
+            f.write(json.dumps(record) + "\n")
+    except Exception:
+        pass  # Never crash on history write
+
+
+async def replay_stream(path: str) -> "AsyncGenerator[AgentEvent, None]":
+    """Replay events from a history JSONL file."""
+    from agentstream.events import Agent, ActionType, AgentEvent
+
+    yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_START, f"Replaying {path}")
+
+    try:
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    event = AgentEvent(
+                        agent=Agent(data.get("agent", "system")),
+                        action=ActionType(data.get("action", "unknown")),
+                        content=data.get("content", ""),
+                        timestamp=datetime.fromisoformat(data["timestamp"]) if "timestamp" in data else datetime.now(),
+                        session_id=data.get("session_id", ""),
+                        metadata=data.get("metadata"),
+                    )
+                    yield event
+                    await asyncio.sleep(0.01)  # Small delay for visual effect
+                except (ValueError, KeyError):
+                    continue
+    except FileNotFoundError:
+        yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"File not found: {path}")
+    except Exception as e:
+        yield AgentEvent(Agent.SYSTEM, ActionType.ERROR, f"Replay error: {e}")
+
+    yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_END, f"Replay complete: {path}")
+
+
+# ---------------------------------------------------------------------------
 # Session toggle widget (sidebar item)
 # ---------------------------------------------------------------------------
+
+def _format_duration(secs: int) -> str:
+    """Format seconds as compact duration string."""
+    if secs < 60:
+        return f"{secs}s"
+    minutes = secs // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h{mins:02d}m"
+
 
 class SessionToggled(Message):
     """Posted when a session's visibility is toggled via sidebar click."""
@@ -99,6 +181,7 @@ class SessionToggle(Static):
     event_count = reactive(0)
     status_text = reactive("active")
     session_cost = reactive(0.0)
+    duration_secs = reactive(0)
 
     def __init__(
         self,
@@ -135,7 +218,7 @@ class SessionToggle(Static):
         t.append(self.display_name[:14], style=f"dim {dim}")
         t.append("\n", style="")
 
-        # Line 2: status + count + cost
+        # Line 2: status + count + cost + duration
         t.append(f"{indent}  ", style="")
         # Status indicator
         _status_colors = {"active": "#34d399", "quiet": "#facc15", "ended": "#ef4444"}
@@ -144,6 +227,9 @@ class SessionToggle(Static):
         t.append(f" {self.event_count:>4}", style=f"dim {SYSTEM_DIM}")
         if self.session_cost > 0:
             t.append(f" ${self.session_cost:.3f}", style=f"dim {SYSTEM_DIM}")
+        elif self.duration_secs > 0:
+            dur = _format_duration(self.duration_secs)
+            t.append(f" {dur}", style=f"dim {SYSTEM_DIM}")
 
         return t
 
@@ -220,7 +306,7 @@ class Sidebar(Vertical):
 
     def update_session(
         self, session_id: str, count: int,
-        status: str = "", cost: float = 0.0,
+        status: str = "", cost: float = 0.0, duration: int = 0,
     ) -> None:
         for toggle in self.query(SessionToggle):
             if toggle.session_id == session_id:
@@ -229,6 +315,8 @@ class Sidebar(Vertical):
                     toggle.status_text = status
                 if cost > 0:
                     toggle.session_cost = cost
+                if duration > 0:
+                    toggle.duration_secs = duration
                 return
 
 
@@ -399,6 +487,116 @@ class EventDetailScreen(ModalScreen[None]):
                 self._index = idx
                 self._render_current()
                 return
+
+
+# ---------------------------------------------------------------------------
+# Stats screen (modal overlay)
+# ---------------------------------------------------------------------------
+
+class StatsScreen(ModalScreen[None]):
+    """Modal showing event statistics breakdown."""
+
+    CSS = f"""
+    StatsScreen {{
+        align: center middle;
+    }}
+    #stats-dialog {{
+        width: 60;
+        height: auto;
+        max-height: 85%;
+        background: {BG_BAR};
+        border: heavy {SEPARATOR_COLOR};
+        padding: 1 2;
+        overflow-y: auto;
+    }}
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss", "Close"),
+        Binding("i", "dismiss", "Close"),
+    ]
+
+    def __init__(self, events: deque, sessions: dict[str, SessionInfo]) -> None:
+        super().__init__()
+        self._events = events
+        self._sessions = sessions
+
+    def compose(self) -> ComposeResult:
+        yield ScrollableContainer(
+            Static("", id="stats-content"),
+            id="stats-dialog",
+        )
+
+    def on_mount(self) -> None:
+        t = Text()
+        t.append("  Event Statistics\n\n", style=f"bold {ACCENT}")
+
+        if not self._events:
+            t.append("  No events recorded.\n", style=f"dim {SYSTEM_DIM}")
+            self.query_one("#stats-content", Static).update(t)
+            return
+
+        # Action type breakdown
+        action_counts: Counter = Counter()
+        agent_counts: Counter = Counter()
+        session_counts: Counter = Counter()
+        first_ts = self._events[0].timestamp
+        last_ts = self._events[-1].timestamp
+        total = len(self._events)
+
+        for event in self._events:
+            action_counts[event.action.value] += 1
+            agent_counts[event.agent.value] += 1
+            if event.session_id:
+                session_counts[event.session_id] += 1
+
+        # Time span
+        span = (last_ts - first_ts).total_seconds()
+        t.append("  Time span:  ", style=f"bold {SYSTEM_DIM}")
+        t.append(f"{first_ts.strftime('%H:%M:%S')} - {last_ts.strftime('%H:%M:%S')}", style=ACCENT)
+        if span > 0:
+            rate = total / span
+            t.append(f" ({rate:.1f} events/sec)\n", style=f"dim {SYSTEM_DIM}")
+        else:
+            t.append("\n", style="")
+
+        t.append(f"  Total:      {total:,} events\n\n", style=f"dim {SYSTEM_DIM}")
+
+        # By agent
+        t.append(f"  {'─' * 50}\n", style=f"dim {SEPARATOR_COLOR}")
+        t.append("  By Agent\n", style=f"bold {ACCENT}")
+        for agent, count in agent_counts.most_common():
+            pct = count / total * 100
+            color = CLAUDE_PRIMARY if agent == "claude" else (CODEX_PRIMARY if agent == "codex" else SYSTEM_DIM)
+            bar_len = int(pct / 100 * 30)
+            t.append(f"  {agent:8s} ", style=f"bold {color}")
+            t.append("█" * bar_len, style=color)
+            t.append(f" {count:>5} ({pct:.0f}%)\n", style=f"dim {SYSTEM_DIM}")
+
+        # By action type (top 12)
+        t.append(f"\n  {'─' * 50}\n", style=f"dim {SEPARATOR_COLOR}")
+        t.append("  By Action Type (top 12)\n", style=f"bold {ACCENT}")
+        for action, count in action_counts.most_common(12):
+            pct = count / total * 100
+            bar_len = int(pct / 100 * 30)
+            t.append(f"  {action:12s} ", style=f"dim {SYSTEM_DIM}")
+            t.append("█" * max(1, bar_len), style=ACCENT)
+            t.append(f" {count:>5} ({pct:.0f}%)\n", style=f"dim {SYSTEM_DIM}")
+
+        # By session (top 8)
+        if session_counts:
+            t.append(f"\n  {'─' * 50}\n", style=f"dim {SEPARATOR_COLOR}")
+            t.append("  By Session (top 8)\n", style=f"bold {ACCENT}")
+            for sid, count in session_counts.most_common(8):
+                name = sid[:12]
+                if sid in self._sessions:
+                    name = self._sessions[sid].display_name[:12]
+                pct = count / total * 100
+                t.append(f"  {name:14s} ", style=f"dim {SYSTEM_DIM}")
+                t.append(f"{count:>5} ({pct:.0f}%)\n", style=f"dim {SYSTEM_DIM}")
+
+        t.append(f"\n  [i/Esc] close\n", style=f"dim {SYSTEM_DIM}")
+        self.query_one("#stats-content", Static).update(t)
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +784,7 @@ class AgentStreamApp(App):
         Binding("e", "export_events", "Export", show=False),
         Binding("b", "toggle_bookmark", "Bookmark", show=False),
         Binding("n", "next_bookmark", "Next bookmark", show=False),
+        Binding("i", "show_stats", "Stats", show=False),
     ]
 
     paused = reactive(False)
@@ -601,11 +800,13 @@ class AgentStreamApp(App):
         sources: list[tuple[str, Any]] | None = None,
         max_content: int = 200,
         bell: bool = False,
+        save_history: bool = True,
     ) -> None:
         super().__init__()
         self.sources = sources or [("demo", None)]
         self.max_content = max_content
         self._bell = bell
+        self._save_history = save_history
         self._tasks: list[asyncio.Task] = []
         self._sessions: dict[str, SessionInfo] = {}
         self._claude_count = 0
@@ -622,8 +823,15 @@ class AgentStreamApp(App):
         self._error_flash_timer: Timer | None = None
         # Track last event time per session for idle detection
         self._session_last_event: dict[str, float] = {}
+        # Track session start times for duration
+        self._session_start_time: dict[str, float] = {}
         # Bookmarks (set of event object ids)
         self._bookmarked: set[int] = set()
+        # Text delta coalescing: buffer rapid deltas
+        self._delta_buffer: dict[str, list[str]] = {}  # session_id -> content parts
+        self._delta_flush_timer: Timer | None = None
+        # Compiled regex for search (None = plain text search)
+        self._search_regex: re.Pattern | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-container"):
@@ -668,6 +876,8 @@ class AgentStreamApp(App):
             self._consume(file_stream(config["agent"], config["path"]))
         elif source_type == "exec":
             self._consume(exec_stream(config["agent"], config["cmd"]))
+        elif source_type == "replay":
+            self._consume(replay_stream(config))
 
     def _consume(self, stream) -> None:
         task = asyncio.ensure_future(self._consume_loop(stream))
@@ -688,6 +898,21 @@ class AgentStreamApp(App):
     # --- Event handling ---
 
     def _add_event(self, event: AgentEvent) -> None:
+        # Persist to history file
+        if self._save_history and event.agent != Agent.SYSTEM:
+            _save_event(event)
+
+        # Text delta coalescing: buffer rapid text deltas and flush periodically
+        if event.action == ActionType.TEXT_DELTA and event.session_id:
+            sid = event.session_id
+            if sid not in self._delta_buffer:
+                self._delta_buffer[sid] = []
+            self._delta_buffer[sid].append(event.content)
+            # Schedule a flush if not already pending
+            if self._delta_flush_timer is None:
+                self._delta_flush_timer = self.set_timer(0.15, self._flush_delta_buffer)
+            return
+
         # Store for search/filter/detail/export
         self._all_events.append(event)
 
@@ -798,6 +1023,43 @@ class AgentStreamApp(App):
             if self._should_display(event):
                 self._write_event_to_log(event)
 
+    def _flush_delta_buffer(self) -> None:
+        """Coalesce buffered text deltas into single events."""
+        self._delta_flush_timer = None
+        for sid, parts in self._delta_buffer.items():
+            if parts:
+                merged = "".join(parts)
+                # Find the agent from sessions
+                agent = Agent.CLAUDE
+                if sid in self._sessions:
+                    agent = self._sessions[sid].agent
+                coalesced = AgentEvent(
+                    agent=agent, action=ActionType.TEXT_DELTA,
+                    content=merged, session_id=sid,
+                )
+                self._all_events.append(coalesced)
+                # Save to history
+                if self._save_history:
+                    _save_event(coalesced)
+                # Track counts
+                if agent == Agent.CLAUDE:
+                    self._claude_count += 1
+                elif agent == Agent.CODEX:
+                    self._codex_count += 1
+                # Register session if needed
+                if sid and sid not in self._sessions:
+                    self._register_session(coalesced)
+                if sid in self._sessions:
+                    self._sessions[sid].event_count += 1
+                    self._session_last_event[sid] = time.time()
+                # Display
+                if not self.paused and self._should_display(coalesced):
+                    self._write_event_to_log(coalesced)
+                elif self.paused:
+                    self._pause_buffer.append(coalesced)
+        self._delta_buffer.clear()
+        self._update_status()
+
     def _should_display(self, event: AgentEvent) -> bool:
         """Check if event should be displayed based on current filters."""
         # System events always shown
@@ -821,16 +1083,19 @@ class AgentStreamApp(App):
             if allowed and event.action not in allowed:
                 return False
 
-        # Search filter
+        # Search filter (supports regex with /pattern/ syntax)
         if self.search_term:
-            term = self.search_term.lower()
             searchable = (
-                event.content.lower()
-                + " " + event.action.value.lower()
-                + " " + event.agent.value.lower()
+                event.content
+                + " " + event.action.value
+                + " " + event.agent.value
             )
-            if term not in searchable:
-                return False
+            if self._search_regex:
+                if not self._search_regex.search(searchable):
+                    return False
+            else:
+                if self.search_term.lower() not in searchable.lower():
+                    return False
 
         return True
 
@@ -867,6 +1132,7 @@ class AgentStreamApp(App):
         )
         self._sessions[sid] = info
         self._session_last_event[sid] = time.time()
+        self._session_start_time[sid] = time.time()
 
         try:
             sidebar = self.query_one(Sidebar)
@@ -935,11 +1201,13 @@ class AgentStreamApp(App):
                 else:
                     status = "active"
                 info = self._sessions[sid]
-                if info.status != status:
+                duration = int(now - self._session_start_time.get(sid, now))
+                if info.status != status or duration > 0:
                     info.status = status
                     try:
                         self.query_one(Sidebar).update_session(
-                            sid, info.event_count, status=status, cost=info.total_cost,
+                            sid, info.event_count, status=status,
+                            cost=info.total_cost, duration=duration,
                         )
                     except Exception:
                         pass
@@ -1002,6 +1270,14 @@ class AgentStreamApp(App):
         """Handle search input changes."""
         if event.input.id == "search-input":
             self.search_term = event.value
+            # Compile regex if /pattern/ syntax used
+            self._search_regex = None
+            if self.search_term.startswith("/") and self.search_term.endswith("/") and len(self.search_term) > 2:
+                pattern = self.search_term[1:-1]
+                try:
+                    self._search_regex = re.compile(pattern, re.IGNORECASE)
+                except re.error:
+                    pass  # Invalid regex, fall back to plain text
             self._rebuild_log()
             # Update match count
             if self.search_term:
@@ -1158,6 +1434,10 @@ class AgentStreamApp(App):
                 severity="error",
                 timeout=5,
             )
+
+    def action_show_stats(self) -> None:
+        """Show event statistics modal."""
+        self.push_screen(StatsScreen(self._all_events, self._sessions))
 
     def action_toggle_bookmark(self) -> None:
         """Toggle bookmark on the most recent event."""

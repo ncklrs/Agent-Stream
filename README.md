@@ -79,6 +79,8 @@ Runs a simulated session showing both Claude and Codex events.
 ```bash
 agentstream --max-content 500    # Wider content display (default: 200 chars)
 agentstream --bell               # Terminal bell on error events
+agentstream --replay ~/.agentstream/history/2026-03-06.jsonl  # Replay history
+agentstream --no-history         # Disable auto-saving to ~/.agentstream/history/
 ```
 
 ## Keyboard
@@ -90,10 +92,11 @@ agentstream --bell               # Terminal bell on error events
 | `1`     | Toggle Claude events on/off   |
 | `2`     | Toggle Codex events on/off    |
 | `f`     | Cycle filter: All → Tools → Errors → Text |
-| `/`     | Search events (Esc to clear)  |
+| `/`     | Search events (Esc to clear, `/regex/` for regex) |
 | `d`     | Event detail view (↑↓ to navigate) |
 | `b`     | Bookmark last event (*-marked in log) |
 | `n`     | Jump to next bookmark (opens detail view) |
+| `i`     | Event statistics (action/agent/session breakdown) |
 | `t`     | Toggle timestamps (absolute / relative) |
 | `e`     | Export visible events to JSONL file |
 | `c`     | Clear the stream log          |
@@ -101,6 +104,8 @@ agentstream --bell               # Terminal bell on error events
 | `q`     | Quit                          |
 
 **Detail view:** `↑`/`↓` navigate, `y` copy to clipboard, `b` bookmark, `n` next bookmark.
+
+**Search:** Type text for plain search, `/pattern/` for regex (e.g. `/error|fail/`).
 
 **Sidebar:** Click sessions to toggle visibility. Click the only visible session to un-solo (show all).
 
@@ -115,7 +120,7 @@ agentstream --bell               # Terminal bell on error events
 - **True pause** - Events buffer in memory while paused so nothing scrolls away; flushed on resume
 - **Cost tracking** - Per-agent cost breakdown in sidebar footer, per-session cost inline, total cost in status bar
 - **Crash-resistant** - Bad JSON, broken pipes, and unknown event types are handled gracefully
-- **Search** - Real-time search across event content, action types, and agent names with match highlighting
+- **Search** - Real-time search with match highlighting; supports regex via `/pattern/` syntax
 - **Action filters** - Quick-cycle through All, Tools-only, Errors-only, or Text-only views
 - **Event detail** - Full-content modal with keyboard navigation through event history
 - **Bookmarks** - Mark important events with `*` indicator, jump between them with `n`
@@ -128,6 +133,11 @@ agentstream --bell               # Terminal bell on error events
 - **Session status** - Sidebar shows active/quiet/idle/ended status with color-coded indicators
 - **Session solo** - Click the only visible session to re-enable all (un-solo)
 - **Subagent grouping** - Subagent sessions visually indented under parent sessions in sidebar
+- **Log persistence** - Auto-saves events to `~/.agentstream/history/` for replay (`--no-history` to disable)
+- **Replay mode** - Replay historical sessions with `--replay path.jsonl`
+- **Event statistics** - Action/agent/session breakdown modal with bar charts (`i`)
+- **Text delta coalescing** - Rapid text deltas are batched to prevent display flood
+- **Session duration** - Sidebar shows time since session started
 
 ## Supported formats
 

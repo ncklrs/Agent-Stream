@@ -325,7 +325,7 @@ def render_logo() -> list[Text]:
 # ---------------------------------------------------------------------------
 
 HELP_CONTENT = """\
-[bold #818cf8]AgentStream[/] [dim]v1.2.0[/]
+[bold #818cf8]AgentStream[/] [dim]v1.3.0[/]
 
 [bold]Keyboard[/]
 [bold #818cf8]space[/]  [#94a3b8]Pause / Resume (buffers events)[/]
@@ -337,6 +337,7 @@ HELP_CONTENT = """\
 [bold #818cf8]    d[/]  [#94a3b8]Detail view (full event content)[/]
 [bold #818cf8]    b[/]  [#94a3b8]Bookmark last event (*-marked in log)[/]
 [bold #818cf8]    n[/]  [#94a3b8]Jump to next bookmark (in detail view)[/]
+[bold #818cf8]    i[/]  [#94a3b8]Event statistics (action/agent breakdown)[/]
 [bold #818cf8]    t[/]  [#94a3b8]Toggle timestamp mode (absolute/relative)[/]
 [bold #818cf8]    e[/]  [#94a3b8]Export visible events to file[/]
 [bold #818cf8]    c[/]  [#94a3b8]Clear the stream log[/]
@@ -349,6 +350,9 @@ HELP_CONTENT = """\
 [bold #818cf8]    y[/]  [#94a3b8]Copy event content to clipboard[/]
 [bold #818cf8]    b[/]  [#94a3b8]Toggle bookmark on current event[/]
 [bold #818cf8]    n[/]  [#94a3b8]Jump to next bookmark[/]
+
+[bold]Search[/]
+[#94a3b8]Type text for plain search, [bold]/pattern/[/bold] for regex[/]
 
 [bold]Sidebar[/]
 [#94a3b8]Click a session to toggle visibility
@@ -363,6 +367,8 @@ Click the only visible session to show all (un-solo)[/]
 [#94a3b8]agentstream --file codex path[/]         [dim]Watch log file[/]
 [#94a3b8]agentstream --max-content 500[/]         [dim]Wider content[/]
 [#94a3b8]agentstream --bell[/]                    [dim]Terminal bell on errors[/]
+[#94a3b8]agentstream --replay path[/]              [dim]Replay history file[/]
+[#94a3b8]agentstream --no-history[/]               [dim]Don't save history[/]
 
 [bold]Pipe examples[/]
 [#a78bfa]claude -p "task" \\

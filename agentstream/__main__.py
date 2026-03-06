@@ -72,6 +72,14 @@ keyboard:
         help="Run a command and stream its JSON output. AGENT is claude|codex|auto",
     )
     parser.add_argument(
+        "--replay", metavar="PATH",
+        help="Replay events from a history JSONL file",
+    )
+    parser.add_argument(
+        "--no-history", action="store_true", default=False,
+        help="Disable auto-saving events to ~/.agentstream/history/",
+    )
+    parser.add_argument(
         "--max-content", type=int, default=200, metavar="N",
         help="Max content display width in chars (default: 200)",
     )
@@ -108,6 +116,9 @@ keyboard:
         for agent, cmd in getattr(args, "exec"):
             sources.append(("exec", {"agent": agent, "cmd": cmd}))
 
+    if args.replay:
+        sources.append(("replay", args.replay))
+
     # Default: watch mode if tty, auto-detect stdin if piped
     if not sources:
         if sys.stdin.isatty():
@@ -118,7 +129,11 @@ keyboard:
     try:
         from agentstream.app import AgentStreamApp
         bell = args.bell and not args.no_bell
-        app = AgentStreamApp(sources=sources, max_content=args.max_content, bell=bell)
+        save_history = not args.no_history
+        app = AgentStreamApp(
+            sources=sources, max_content=args.max_content,
+            bell=bell, save_history=save_history,
+        )
         app.run()
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
