@@ -45,7 +45,9 @@ examples:
 
 keyboard:
   space  Pause/Resume    s    Toggle sidebar    1/2  Filter agents
-  c      Clear log       ?    Help              q    Quit
+  f      Cycle filter    /    Search events     d    Event detail
+  b      Bookmark        n    Next bookmark     t    Timestamps
+  e      Export events   c    Clear log         ?    Help    q  Quit
 """,
     )
 
@@ -72,6 +74,14 @@ keyboard:
     parser.add_argument(
         "--max-content", type=int, default=200, metavar="N",
         help="Max content display width in chars (default: 200)",
+    )
+    parser.add_argument(
+        "--bell", action="store_true", default=False,
+        help="Ring terminal bell on error events",
+    )
+    parser.add_argument(
+        "--no-bell", action="store_true", default=False,
+        help="Disable terminal bell (default)",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}",
@@ -107,7 +117,8 @@ keyboard:
 
     try:
         from agentstream.app import AgentStreamApp
-        app = AgentStreamApp(sources=sources, max_content=args.max_content)
+        bell = args.bell and not args.no_bell
+        app = AgentStreamApp(sources=sources, max_content=args.max_content, bell=bell)
         app.run()
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)

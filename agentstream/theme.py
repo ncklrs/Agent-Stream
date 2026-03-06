@@ -161,6 +161,7 @@ def render_event(
     max_content: int = 200,
     relative_time: bool = False,
     search_term: str = "",
+    bookmarked: bool = False,
 ) -> Text:
     """Render an AgentEvent as a styled Rich Text line.
 
@@ -168,6 +169,7 @@ def render_event(
     *max_content* controls content truncation length.
     *relative_time* shows "2s ago" style timestamps.
     *search_term* highlights matching text in content.
+    *bookmarked* shows a bookmark indicator.
     """
     primary, dim = colors or AGENT_COLORS.get(event.agent, (SYSTEM_PRIMARY, SYSTEM_DIM))
     icon = ACTION_ICONS.get(event.action, "  ")
@@ -181,8 +183,14 @@ def render_event(
 
     line = Text()
 
+    # Bookmark indicator
+    if bookmarked:
+        line.append("*", style=f"bold {SEARCH_HIGHLIGHT}")
+    else:
+        line.append(" ", style="")
+
     # Timestamp
-    line.append(f" {ts_str} ", style=f"dim {SYSTEM_DIM}")
+    line.append(f"{ts_str} ", style=f"dim {SYSTEM_DIM}")
     line.append("|", style=f"dim {SEPARATOR_COLOR}")
 
     # Icon
@@ -268,7 +276,16 @@ def render_event_detail(event: AgentEvent, colors: tuple[str, str] | None = None
     # Full content (no truncation)
     detail.append("  ", style="")
     detail.append(event.content or "(empty)", style=content_color)
-    detail.append("\n", style="")
+    detail.append("\n\n", style="")
+
+    # Action hints
+    detail.append(f"  {'─' * 50}\n", style=f"dim {SEPARATOR_COLOR}")
+    detail.append("  [y]", style=f"bold {ACCENT}")
+    detail.append(" copy  ", style=f"dim {SYSTEM_DIM}")
+    detail.append("[b]", style=f"bold {ACCENT}")
+    detail.append(" bookmark  ", style=f"dim {SYSTEM_DIM}")
+    detail.append("[↑↓]", style=f"bold {ACCENT}")
+    detail.append(" navigate\n", style=f"dim {SYSTEM_DIM}")
 
     return detail
 
@@ -308,7 +325,7 @@ def render_logo() -> list[Text]:
 # ---------------------------------------------------------------------------
 
 HELP_CONTENT = """\
-[bold #818cf8]AgentStream[/] [dim]v1.1.0[/]
+[bold #818cf8]AgentStream[/] [dim]v1.2.0[/]
 
 [bold]Keyboard[/]
 [bold #818cf8]space[/]  [#94a3b8]Pause / Resume (buffers events)[/]
@@ -318,11 +335,24 @@ HELP_CONTENT = """\
 [bold #818cf8]    f[/]  [#94a3b8]Cycle filter: All → Tools → Errors → Text[/]
 [bold #818cf8]    /[/]  [#94a3b8]Search events (Esc to clear)[/]
 [bold #818cf8]    d[/]  [#94a3b8]Detail view (full event content)[/]
+[bold #818cf8]    b[/]  [#94a3b8]Bookmark last event (*-marked in log)[/]
+[bold #818cf8]    n[/]  [#94a3b8]Jump to next bookmark (in detail view)[/]
 [bold #818cf8]    t[/]  [#94a3b8]Toggle timestamp mode (absolute/relative)[/]
 [bold #818cf8]    e[/]  [#94a3b8]Export visible events to file[/]
 [bold #818cf8]    c[/]  [#94a3b8]Clear the stream log[/]
 [bold #818cf8]    ?[/]  [#94a3b8]Show / hide this help[/]
 [bold #818cf8]    q[/]  [#94a3b8]Quit[/]
+
+[bold]Detail View[/]
+[bold #818cf8]  ↑/k[/]  [#94a3b8]Previous event[/]
+[bold #818cf8]  ↓/j[/]  [#94a3b8]Next event[/]
+[bold #818cf8]    y[/]  [#94a3b8]Copy event content to clipboard[/]
+[bold #818cf8]    b[/]  [#94a3b8]Toggle bookmark on current event[/]
+[bold #818cf8]    n[/]  [#94a3b8]Jump to next bookmark[/]
+
+[bold]Sidebar[/]
+[#94a3b8]Click a session to toggle visibility
+Click the only visible session to show all (un-solo)[/]
 
 [bold]Usage[/]
 [#94a3b8]agentstream[/]                           [dim]Watch mode[/]
@@ -332,11 +362,11 @@ HELP_CONTENT = """\
 [#94a3b8]agentstream --exec codex "cmd"[/]        [dim]Run subprocess[/]
 [#94a3b8]agentstream --file codex path[/]         [dim]Watch log file[/]
 [#94a3b8]agentstream --max-content 500[/]         [dim]Wider content[/]
+[#94a3b8]agentstream --bell[/]                    [dim]Terminal bell on errors[/]
 
 [bold]Pipe examples[/]
 [#a78bfa]claude -p "task" \\
   --output-format stream-json | agentstream[/]
 [#4ade80]codex exec --json "task" | agentstream[/]
 
-[dim]Click streams in sidebar to toggle visibility
-Press [bold]?[/bold] or [bold]Esc[/bold] to close[/]"""
+[dim]Press [bold]?[/bold] or [bold]Esc[/bold] to close[/]"""

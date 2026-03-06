@@ -78,6 +78,7 @@ Runs a simulated session showing both Claude and Codex events.
 
 ```bash
 agentstream --max-content 500    # Wider content display (default: 200 chars)
+agentstream --bell               # Terminal bell on error events
 ```
 
 ## Keyboard
@@ -91,13 +92,17 @@ agentstream --max-content 500    # Wider content display (default: 200 chars)
 | `f`     | Cycle filter: All → Tools → Errors → Text |
 | `/`     | Search events (Esc to clear)  |
 | `d`     | Event detail view (↑↓ to navigate) |
+| `b`     | Bookmark last event (*-marked in log) |
+| `n`     | Jump to next bookmark (opens detail view) |
 | `t`     | Toggle timestamps (absolute / relative) |
 | `e`     | Export visible events to JSONL file |
 | `c`     | Clear the stream log          |
 | `?`     | Help overlay                  |
 | `q`     | Quit                          |
 
-Click sessions in the sidebar to toggle individual stream visibility.
+**Detail view:** `↑`/`↓` navigate, `y` copy to clipboard, `b` bookmark, `n` next bookmark.
+
+**Sidebar:** Click sessions to toggle visibility. Click the only visible session to un-solo (show all).
 
 ## Features
 
@@ -106,18 +111,22 @@ Click sessions in the sidebar to toggle individual stream visibility.
 - **Session naming** - Claude sessions labeled by slug name (e.g. "hummingbird"), Codex sessions by working directory project name
 - **Auto-detection** - Distinguishes Claude CLI JSONL, Codex JSONL, and Claude API SSE formats from the first line
 - **Color-coded agents** - Claude in violet, Codex in green, distinct colors per action type
-- **Session tracking** - Each agent session gets a sidebar entry with event counts, status, and cost
+- **Session tracking** - Each agent session gets a sidebar entry with event counts, status, cost, and connection state
 - **True pause** - Events buffer in memory while paused so nothing scrolls away; flushed on resume
-- **Cost tracking** - Displays cumulative API cost from Claude result events, per-session cost in sidebar
+- **Cost tracking** - Per-agent cost breakdown in sidebar footer, per-session cost inline, total cost in status bar
 - **Crash-resistant** - Bad JSON, broken pipes, and unknown event types are handled gracefully
 - **Search** - Real-time search across event content, action types, and agent names with match highlighting
 - **Action filters** - Quick-cycle through All, Tools-only, Errors-only, or Text-only views
 - **Event detail** - Full-content modal with keyboard navigation through event history
-- **Error notifications** - Status bar flash and persistent error counter for immediate visibility
+- **Bookmarks** - Mark important events with `*` indicator, jump between them with `n`
+- **Copy to clipboard** - Copy full event content from detail view (`y`)
+- **Error notifications** - Status bar flash, persistent error counter, optional terminal bell (`--bell`)
+- **Scroll position** - Shows scroll percentage and lines below when scrolled up from bottom
 - **Relative timestamps** - Toggle between absolute (14:23:45) and relative (2s, 1m) time display
 - **Export** - Dump visible events to timestamped JSONL files for offline analysis
 - **Configurable truncation** - `--max-content` flag to control event content display width
-- **Session status** - Sidebar shows active/quiet/idle status with auto-detection
+- **Session status** - Sidebar shows active/quiet/idle/ended status with color-coded indicators
+- **Session solo** - Click the only visible session to re-enable all (un-solo)
 - **Subagent grouping** - Subagent sessions visually indented under parent sessions in sidebar
 
 ## Supported formats

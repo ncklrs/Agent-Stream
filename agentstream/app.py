@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import platform
+import subprocess
+import sys
 import time
 from collections import deque
 from datetime import datetime
@@ -37,6 +40,34 @@ from agentstream.streams import demo_stream, stdin_stream, file_stream, exec_str
 _PAUSE_BUFFER_MAX = 50_000
 # Max events stored for search/filter/detail/export
 _MAX_STORED_EVENTS = 10_000
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Copy text to system clipboard. Returns True on success."""
+    try:
+        if platform.system() == "Darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True, timeout=3)
+            return True
+        elif platform.system() == "Linux":
+            # Try xclip first, then xsel
+            for cmd in [["xclip", "-selection", "clipboard"], ["xsel", "--clipboard", "--input"]]:
+                try:
+                    subprocess.run(cmd, input=text.encode(), check=True, timeout=3)
+                    return True
+                except FileNotFoundError:
+                    continue
+            # Try wl-copy for Wayland
+            try:
+                subprocess.run(["wl-copy"], input=text.encode(), check=True, timeout=3)
+                return True
+            except FileNotFoundError:
+                pass
+        elif platform.system() == "Windows":
+            subprocess.run(["clip"], input=text.encode(), check=True, timeout=3)
+            return True
+    except Exception:
+        pass
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +138,8 @@ class SessionToggle(Static):
         # Line 2: status + count + cost
         t.append(f"{indent}  ", style="")
         # Status indicator
-        status_color = "#34d399" if self.status_text == "active" else SYSTEM_DIM
+        _status_colors = {"active": "#34d399", "quiet": "#facc15", "ended": "#ef4444"}
+        status_color = _status_colors.get(self.status_text, SYSTEM_DIM)
         t.append(f"{self.status_text:6s}", style=f"dim {status_color}")
         t.append(f" {self.event_count:>4}", style=f"dim {SYSTEM_DIM}")
         if self.session_cost > 0:
@@ -147,11 +179,32 @@ class Sidebar(Vertical):
         height: 1fr;
         overflow-y: auto;
     }}
+    #sidebar-footer {{
+        height: auto;
+        max-height: 3;
+        dock: bottom;
+        padding: 0 1;
+        background: {BG_BAR};
+    }}
     """
 
     def compose(self) -> ComposeResult:
         yield Static(" STREAMS", id="sidebar-header")
         yield ScrollableContainer(id="session-container")
+        yield Static("", id="sidebar-footer")
+
+    def update_footer(self, claude_cost: float, codex_cost: float, total_events: int) -> None:
+        """Update sidebar footer with cost breakdown."""
+        t = Text()
+        t.append(f" {'─' * 24}\n", style=f"dim {SEPARATOR_COLOR}")
+        if claude_cost > 0 or codex_cost > 0:
+            t.append(f" CL ${claude_cost:.4f}", style=f"dim {CLAUDE_DIM}")
+            t.append(f"  CX ${codex_cost:.4f}\n", style=f"dim {CODEX_DIM}")
+        t.append(f" {total_events:,} events", style=f"dim {SYSTEM_DIM}")
+        try:
+            self.query_one("#sidebar-footer", Static).update(t)
+        except Exception:
+            pass
 
     def add_session(
         self, session_id: str, agent: Agent, display_name: str,
@@ -243,13 +296,23 @@ class EventDetailScreen(ModalScreen[None]):
         Binding("d", "dismiss", "Close"),
         Binding("up,k", "prev_event", "Previous"),
         Binding("down,j", "next_event", "Next"),
+        Binding("y", "copy_event", "Copy"),
+        Binding("b", "toggle_bookmark", "Bookmark"),
+        Binding("n", "next_bookmark", "Next bookmark"),
     ]
 
-    def __init__(self, events: list[AgentEvent], sessions: dict[str, SessionInfo]) -> None:
+    def __init__(
+        self,
+        events: list[AgentEvent],
+        sessions: dict[str, SessionInfo],
+        bookmarked: set | None = None,
+        start_index: int = -1,
+    ) -> None:
         super().__init__()
         self._events = events
         self._sessions = sessions
-        self._index = len(events) - 1 if events else 0
+        self._bookmarked = bookmarked or set()
+        self._index = start_index if start_index >= 0 else (len(events) - 1 if events else 0)
 
     def compose(self) -> ComposeResult:
         yield ScrollableContainer(
@@ -278,8 +341,11 @@ class EventDetailScreen(ModalScreen[None]):
         self.query_one("#detail-content", Static).update(render_event_detail(event, colors))
 
         # Navigation hint
+        is_bm = id(event) in self._bookmarked
         nav = Text()
         nav.append(f" Event {self._index + 1}/{len(self._events)} ", style=f"dim {SYSTEM_DIM}")
+        if is_bm:
+            nav.append("*", style=f"bold #fbbf24")
         nav.append("  [↑/k]", style=f"bold {ACCENT}")
         nav.append("prev ", style=f"dim {SYSTEM_DIM}")
         nav.append("[↓/j]", style=f"bold {ACCENT}")
@@ -297,6 +363,42 @@ class EventDetailScreen(ModalScreen[None]):
         if self._index < len(self._events) - 1:
             self._index += 1
             self._render_current()
+
+    def action_copy_event(self) -> None:
+        """Copy current event content to clipboard."""
+        if not self._events:
+            return
+        event = self._events[self._index]
+        text = event.content
+        if _copy_to_clipboard(text):
+            self.notify("Copied to clipboard", timeout=2)
+        else:
+            self.notify("Clipboard unavailable - content in terminal", timeout=3)
+
+    def action_toggle_bookmark(self) -> None:
+        """Toggle bookmark on the current event."""
+        if not self._events:
+            return
+        event = self._events[self._index]
+        eid = id(event)
+        if eid in self._bookmarked:
+            self._bookmarked.discard(eid)
+        else:
+            self._bookmarked.add(eid)
+        self._render_current()
+
+    def action_next_bookmark(self) -> None:
+        """Jump to the next bookmarked event."""
+        if not self._bookmarked:
+            self.notify("No bookmarks set (press b to bookmark)", timeout=2)
+            return
+        # Search forward from current index, wrapping around
+        for offset in range(1, len(self._events) + 1):
+            idx = (self._index + offset) % len(self._events)
+            if id(self._events[idx]) in self._bookmarked:
+                self._index = idx
+                self._render_current()
+                return
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +467,7 @@ class StatusBar(Static):
     search_active = reactive(False)
     relative_time = reactive(False)
     scroll_position = reactive("")
+    bookmark_count = reactive(0)
 
     def render(self) -> Text:
         bar = Text()
@@ -391,6 +494,10 @@ class StatusBar(Static):
         # Error count
         if self.error_count > 0:
             bar.append(f" !{self.error_count}", style="bold #ef4444")
+
+        # Bookmark count
+        if self.bookmark_count > 0:
+            bar.append(f" *{self.bookmark_count}", style=f"bold #fbbf24")
 
         # Cost (if tracked)
         if self.total_cost > 0:
@@ -477,6 +584,8 @@ class AgentStreamApp(App):
         Binding("d", "show_detail", "Detail", show=False),
         Binding("t", "toggle_timestamps", "Timestamps", show=False),
         Binding("e", "export_events", "Export", show=False),
+        Binding("b", "toggle_bookmark", "Bookmark", show=False),
+        Binding("n", "next_bookmark", "Next bookmark", show=False),
     ]
 
     paused = reactive(False)
@@ -491,14 +600,18 @@ class AgentStreamApp(App):
         self,
         sources: list[tuple[str, Any]] | None = None,
         max_content: int = 200,
+        bell: bool = False,
     ) -> None:
         super().__init__()
         self.sources = sources or [("demo", None)]
         self.max_content = max_content
+        self._bell = bell
         self._tasks: list[asyncio.Task] = []
         self._sessions: dict[str, SessionInfo] = {}
         self._claude_count = 0
         self._codex_count = 0
+        self._claude_cost = 0.0
+        self._codex_cost = 0.0
         self._total_cost = 0.0
         self._error_count = 0
         self._last_action: ActionType | None = None
@@ -509,6 +622,8 @@ class AgentStreamApp(App):
         self._error_flash_timer: Timer | None = None
         # Track last event time per session for idle detection
         self._session_last_event: dict[str, float] = {}
+        # Bookmarks (set of event object ids)
+        self._bookmarked: set[int] = set()
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="main-container"):
@@ -538,6 +653,9 @@ class AgentStreamApp(App):
 
         # Periodic session idle check
         self.set_interval(10.0, self._check_session_idle)
+
+        # Scroll position tracking
+        self.set_interval(0.5, self._check_scroll_position)
 
     def _start_source(self, source_type: str, config: Any) -> None:
         if source_type == "demo":
@@ -583,6 +701,8 @@ class AgentStreamApp(App):
         if event.action in (ActionType.ERROR, ActionType.TURN_FAILED):
             self._error_count += 1
             self._flash_error()
+            if self._bell:
+                self.bell()
 
         # Register new session if we see a new session_id
         if event.session_id and event.session_id not in self._sessions:
@@ -609,11 +729,28 @@ class AgentStreamApp(App):
             except Exception:
                 pass
 
-        # Track cost from result/metadata
+        # Track cost from result/metadata (per-agent)
         if event.metadata and "total_cost_usd" in event.metadata:
             cost = event.metadata["total_cost_usd"]
             if cost:
                 self._total_cost += cost
+                if event.agent == Agent.CLAUDE:
+                    self._claude_cost += cost
+                elif event.agent == Agent.CODEX:
+                    self._codex_cost += cost
+
+        # Track connection status (STREAM_END = disconnected)
+        if event.action == ActionType.STREAM_END and event.session_id:
+            if event.session_id in self._sessions:
+                self._sessions[event.session_id].connected = False
+                try:
+                    self.query_one(Sidebar).update_session(
+                        event.session_id,
+                        self._sessions[event.session_id].event_count,
+                        status="ended",
+                    )
+                except Exception:
+                    pass
 
         # When paused, buffer events instead of writing to the log.
         if self.paused:
@@ -649,6 +786,7 @@ class AgentStreamApp(App):
             max_content=self.max_content,
             relative_time=self.relative_time,
             search_term=self.search_term,
+            bookmarked=id(event) in self._bookmarked,
         ))
         self._last_action = event.action
         self.event_count += 1
@@ -751,6 +889,15 @@ class AgentStreamApp(App):
             status.filter_mode = self.filter_mode
             status.search_active = self._search_active
             status.relative_time = self.relative_time
+            status.bookmark_count = len(self._bookmarked)
+        except Exception:
+            pass
+
+        # Update sidebar cost footer
+        try:
+            self.query_one(Sidebar).update_footer(
+                self._claude_cost, self._codex_cost, len(self._all_events),
+            )
         except Exception:
             pass
 
@@ -797,6 +944,23 @@ class AgentStreamApp(App):
                     except Exception:
                         pass
 
+    def _check_scroll_position(self) -> None:
+        """Update scroll position indicator in status bar."""
+        try:
+            log = self.query_one("#stream-log", RichLog)
+            status = self.query_one(StatusBar)
+            if log.auto_scroll or log.max_scroll_y <= 0:
+                status.scroll_position = ""
+            else:
+                pct = int(log.scroll_y / log.max_scroll_y * 100) if log.max_scroll_y > 0 else 100
+                below = int(log.max_scroll_y - log.scroll_y)
+                if below > 0:
+                    status.scroll_position = f"↑{pct}% ({below} below)"
+                else:
+                    status.scroll_position = ""
+        except Exception:
+            pass
+
     def _rebuild_log(self) -> None:
         """Rebuild the event log from stored events applying current filters."""
         log = self.query_one("#stream-log", RichLog)
@@ -814,8 +978,23 @@ class AgentStreamApp(App):
     # --- Session visibility (from sidebar clicks) ---
 
     def on_session_toggled(self, message: SessionToggled) -> None:
-        if message.session_id in self._sessions:
-            self._sessions[message.session_id].visible = message.visible
+        if message.session_id not in self._sessions:
+            return
+
+        sid = message.session_id
+        visible_count = sum(1 for s in self._sessions.values() if s.visible)
+
+        # Solo logic: if clicking the only visible session (to disable it),
+        # re-enable all sessions instead
+        if not message.visible and visible_count == 1 and self._sessions[sid].visible:
+            for s in self._sessions.values():
+                s.visible = True
+            for toggle in self.query_one(Sidebar).query(SessionToggle):
+                toggle.enabled = True
+            return
+
+        # Normal toggle
+        self._sessions[sid].visible = message.visible
 
     # --- Search handling ---
 
@@ -867,10 +1046,13 @@ class AgentStreamApp(App):
         self._claude_count = 0
         self._codex_count = 0
         self._total_cost = 0.0
+        self._claude_cost = 0.0
+        self._codex_cost = 0.0
         self._error_count = 0
         self._last_action = None
         self._pause_buffer.clear()
         self._all_events.clear()
+        self._bookmarked.clear()
         for sid in self._sessions:
             self._sessions[sid].event_count = 0
             self._sessions[sid].total_cost = 0.0
@@ -931,10 +1113,9 @@ class AgentStreamApp(App):
         """Show event detail modal."""
         if not self._all_events:
             return
-        # Show only visible events in the detail view
         visible = [e for e in self._all_events if self._should_display(e)]
         if visible:
-            self.push_screen(EventDetailScreen(visible, self._sessions))
+            self.push_screen(EventDetailScreen(visible, self._sessions, self._bookmarked))
 
     def action_toggle_timestamps(self) -> None:
         """Toggle between absolute and relative timestamps."""
@@ -977,6 +1158,34 @@ class AgentStreamApp(App):
                 severity="error",
                 timeout=5,
             )
+
+    def action_toggle_bookmark(self) -> None:
+        """Toggle bookmark on the most recent event."""
+        if not self._all_events:
+            return
+        event = self._all_events[-1]
+        eid = id(event)
+        if eid in self._bookmarked:
+            self._bookmarked.discard(eid)
+            self.notify("Bookmark removed", timeout=1)
+        else:
+            self._bookmarked.add(eid)
+            self.notify("Bookmarked *", timeout=1)
+        self._update_status()
+
+    def action_next_bookmark(self) -> None:
+        """Open detail view at the next bookmarked event."""
+        if not self._bookmarked:
+            self.notify("No bookmarks set (press b to bookmark)", timeout=2)
+            return
+        visible = [e for e in self._all_events if self._should_display(e)]
+        # Find first bookmarked event
+        for idx, event in enumerate(visible):
+            if id(event) in self._bookmarked:
+                self.push_screen(
+                    EventDetailScreen(visible, self._sessions, self._bookmarked, start_index=idx)
+                )
+                return
 
     def on_key(self, event) -> None:
         """Handle Escape in search mode."""

@@ -102,3 +102,4 @@ class SessionInfo:
     total_cost: float = 0.0
     color: str = ""
     color_dim: str = ""
+    connected: bool = True  # False when STREAM_END received
