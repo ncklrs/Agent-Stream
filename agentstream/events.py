@@ -51,6 +51,35 @@ class ActionType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class FilterMode(str, Enum):
+    """Action-type filter modes for the event log."""
+    ALL = "all"
+    TOOLS = "tools"
+    ERRORS = "errors"
+    TEXT = "text"
+
+
+# Which action types each filter mode passes through
+FILTER_MODE_ACTIONS: dict[FilterMode, frozenset[ActionType]] = {
+    FilterMode.ALL: frozenset(ActionType),
+    FilterMode.TOOLS: frozenset({
+        ActionType.TOOL_USE, ActionType.TOOL_RESULT, ActionType.COMMAND,
+        ActionType.FILE_CHANGE, ActionType.MCP_TOOL, ActionType.WEB_SEARCH,
+        ActionType.ERROR, ActionType.INIT, ActionType.RESULT,
+        ActionType.STREAM_START, ActionType.STREAM_END,
+    }),
+    FilterMode.ERRORS: frozenset({
+        ActionType.ERROR, ActionType.TURN_FAILED,
+        ActionType.STREAM_START, ActionType.STREAM_END,
+    }),
+    FilterMode.TEXT: frozenset({
+        ActionType.TEXT, ActionType.TEXT_DELTA, ActionType.AGENT_MESSAGE,
+        ActionType.THINKING, ActionType.REASONING, ActionType.USER_PROMPT,
+        ActionType.STREAM_START, ActionType.STREAM_END,
+    }),
+}
+
+
 @dataclass(slots=True)
 class AgentEvent:
     agent: Agent

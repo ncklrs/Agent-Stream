@@ -74,6 +74,12 @@ agentstream --demo
 
 Runs a simulated session showing both Claude and Codex events.
 
+### Options
+
+```bash
+agentstream --max-content 500    # Wider content display (default: 200 chars)
+```
+
 ## Keyboard
 
 | Key     | Action                        |
@@ -82,6 +88,11 @@ Runs a simulated session showing both Claude and Codex events.
 | `s`     | Toggle sidebar (stream list)  |
 | `1`     | Toggle Claude events on/off   |
 | `2`     | Toggle Codex events on/off    |
+| `f`     | Cycle filter: All → Tools → Errors → Text |
+| `/`     | Search events (Esc to clear)  |
+| `d`     | Event detail view (↑↓ to navigate) |
+| `t`     | Toggle timestamps (absolute / relative) |
+| `e`     | Export visible events to JSONL file |
 | `c`     | Clear the stream log          |
 | `?`     | Help overlay                  |
 | `q`     | Quit                          |
@@ -95,10 +106,19 @@ Click sessions in the sidebar to toggle individual stream visibility.
 - **Session naming** - Claude sessions labeled by slug name (e.g. "hummingbird"), Codex sessions by working directory project name
 - **Auto-detection** - Distinguishes Claude CLI JSONL, Codex JSONL, and Claude API SSE formats from the first line
 - **Color-coded agents** - Claude in violet, Codex in green, distinct colors per action type
-- **Session tracking** - Each agent session gets a sidebar entry with event counts
+- **Session tracking** - Each agent session gets a sidebar entry with event counts, status, and cost
 - **True pause** - Events buffer in memory while paused so nothing scrolls away; flushed on resume
-- **Cost tracking** - Displays cumulative API cost from Claude result events
+- **Cost tracking** - Displays cumulative API cost from Claude result events, per-session cost in sidebar
 - **Crash-resistant** - Bad JSON, broken pipes, and unknown event types are handled gracefully
+- **Search** - Real-time search across event content, action types, and agent names with match highlighting
+- **Action filters** - Quick-cycle through All, Tools-only, Errors-only, or Text-only views
+- **Event detail** - Full-content modal with keyboard navigation through event history
+- **Error notifications** - Status bar flash and persistent error counter for immediate visibility
+- **Relative timestamps** - Toggle between absolute (14:23:45) and relative (2s, 1m) time display
+- **Export** - Dump visible events to timestamped JSONL files for offline analysis
+- **Configurable truncation** - `--max-content` flag to control event content display width
+- **Session status** - Sidebar shows active/quiet/idle status with auto-detection
+- **Subagent grouping** - Subagent sessions visually indented under parent sessions in sidebar
 
 ## Supported formats
 

@@ -70,6 +70,10 @@ keyboard:
         help="Run a command and stream its JSON output. AGENT is claude|codex|auto",
     )
     parser.add_argument(
+        "--max-content", type=int, default=200, metavar="N",
+        help="Max content display width in chars (default: 200)",
+    )
+    parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}",
     )
 
@@ -103,7 +107,7 @@ keyboard:
 
     try:
         from agentstream.app import AgentStreamApp
-        app = AgentStreamApp(sources=sources)
+        app = AgentStreamApp(sources=sources, max_content=args.max_content)
         app.run()
     except ImportError as e:
         print(f"Missing dependency: {e}", file=sys.stderr)
