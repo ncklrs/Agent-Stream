@@ -4,9 +4,18 @@
 ```
 **your agents streaming by @ncklrs**
 
+> **`htop` for coding agents** — zero-config terminal UI that streams Claude Code and Codex sessions in real time. No accounts, no SDKs, no data leaves your machine.
+
 A terminal UI that streams and visualizes agent events from **Claude Code** and **OpenAI Codex** in a single unified view.
 
 ![AgentStream watching a Codex session](assets/agent_stream_codex_git_commands.png)
+
+## Why AgentStream?
+
+- **Zero config** — auto-discovers active sessions. No API keys, no accounts, no proxy setup.
+- **Terminal native** — lives where coding agents live. No context switch to a browser.
+- **Privacy first** — everything stays local. No telemetry, no cloud.
+- **Multi-agent** — the only tool that shows Claude Code and Codex side-by-side.
 
 ## Install
 
@@ -148,6 +157,13 @@ agentstream --no-history         # Disable auto-saving to ~/.agentstream/history
 | Codex CLI | `codex exec --json "..."` | JSONL with dot-separated event types |
 | Codex interactive | `~/.codex/sessions/` (watch mode) | JSONL with payload-wrapped event types |
 | Claude API (raw) | `curl -N .../v1/messages` | Server-Sent Events (SSE) |
+
+## Supported Agents
+
+- **Claude Code** — CLI and interactive sessions
+- **OpenAI Codex CLI** — CLI and interactive sessions
+- **Claude API** — raw SSE streaming
+- **More coming soon** — Cursor, Aider, Windsurf
 
 ## License
 

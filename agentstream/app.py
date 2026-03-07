@@ -817,6 +817,8 @@ class AgentStreamApp(App):
         self._error_count = 0
         self._last_action: ActionType | None = None
         self._pause_buffer: deque[AgentEvent] = deque(maxlen=_PAUSE_BUFFER_MAX)
+        # Tool call pairing: maps session_id -> (tool_name, start_time)
+        self._last_tool_per_session: dict[str, tuple[str, datetime]] = {}
         # Store events for search/filter/detail/export
         self._all_events: deque[AgentEvent] = deque(maxlen=_MAX_STORED_EVENTS)
         self._search_active = False
@@ -964,6 +966,9 @@ class AgentStreamApp(App):
                 elif event.agent == Agent.CODEX:
                     self._codex_cost += cost
 
+        # Tool call pairing: track tool_use starts, annotate tool_results
+        self._pair_tool_events(event)
+
         # Track connection status (STREAM_END = disconnected)
         if event.action == ActionType.STREAM_END and event.session_id:
             if event.session_id in self._sessions:
@@ -1098,6 +1103,34 @@ class AgentStreamApp(App):
                     return False
 
         return True
+
+    @staticmethod
+    def _extract_tool_name(content: str) -> str:
+        """Extract tool name from TOOL_USE / COMMAND content."""
+        if not content:
+            return "tool"
+        if content.startswith("Calling ") and len(content.split()) >= 2:
+            return content.split()[1]
+        return content.split()[0]
+
+    def _pair_tool_events(self, event: AgentEvent) -> None:
+        """Track tool_use starts and annotate tool_result events with elapsed time."""
+        sid = event.session_id or ""
+
+        if event.action in (ActionType.TOOL_USE, ActionType.COMMAND):
+            tool_name = self._extract_tool_name(event.content)
+            self._last_tool_per_session[sid] = (tool_name, event.timestamp)
+
+        elif event.action == ActionType.TOOL_RESULT:
+            prev = self._last_tool_per_session.pop(sid, None)
+            if prev:
+                tool_name, start_time = prev
+                elapsed = (event.timestamp - start_time).total_seconds()
+                content = event.content or ""
+                if elapsed >= 0.1:
+                    event.content = f"{tool_name} -> {content} ({elapsed:.1f}s)"
+                else:
+                    event.content = f"{tool_name} -> {content}"
 
     def _register_session(self, event: AgentEvent) -> None:
         """Register a new session in the sidebar."""

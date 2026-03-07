@@ -398,6 +398,7 @@ class CodexJSONLParser(BaseParser):
 
     def __init__(self):
         self._thread_id: str = ""
+        self._model: str = ""
 
     def parse_line(self, line: str) -> Optional[AgentEvent]:
         line = line.strip()
@@ -413,6 +414,9 @@ class CodexJSONLParser(BaseParser):
 
         if etype == "thread.started":
             self._thread_id = data.get("thread_id", "")
+            model = data.get("model", "")
+            if model:
+                self._model = model
             short_id = self._thread_id[:8] if self._thread_id else "?"
             return AgentEvent(Agent.CODEX, ActionType.THREAD_START,
                               f"Thread {short_id}", session_id=self._thread_id)
@@ -422,17 +426,25 @@ class CodexJSONLParser(BaseParser):
                               "New turn", session_id=self._thread_id)
 
         elif etype == "turn.completed":
+            # Track model if present on turn events
+            model = data.get("model", "")
+            if model:
+                self._model = model
             usage = data.get("usage", {})
             inp = usage.get("input_tokens", 0)
             out = usage.get("output_tokens", 0)
             cached = usage.get("cached_input_tokens", 0)
+            cost = _estimate_codex_cost(usage, self._model)
             parts = [f"{inp:,} in"]
             if cached:
                 parts.append(f"{cached:,} cached")
             parts.append(f"{out:,} out")
+            if cost:
+                parts.append(f"${cost:.4f}")
+            meta: dict = {"usage": usage, "total_cost_usd": cost}
             return AgentEvent(Agent.CODEX, ActionType.TURN_COMPLETE,
                               " / ".join(parts), session_id=self._thread_id,
-                              metadata={"usage": usage})
+                              metadata=meta)
 
         elif etype == "turn.failed":
             error = data.get("error", {})
@@ -798,8 +810,14 @@ class CodexInteractiveParser(BaseParser):
         elif event_type == "task_complete":
             last_msg = payload.get("last_agent_message", "")
             snippet = str(last_msg)[:200] if last_msg else "Done"
+            usage = payload.get("usage", {})
+            meta: dict | None = None
+            if usage:
+                cost = _estimate_codex_cost(usage, self._model)
+                meta = {"usage": usage, "total_cost_usd": cost}
             return AgentEvent(Agent.CODEX, ActionType.TURN_COMPLETE,
-                              snippet, session_id=self._session_id)
+                              snippet, session_id=self._session_id,
+                              metadata=meta)
 
         elif event_type == "token_count":
             return None  # Too noisy
@@ -921,6 +939,32 @@ class AutoDetectParser(BaseParser):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_CODEX_PRICING: dict[str, tuple[float, float, float]] = {
+    # (input_per_token, output_per_token, cached_input_per_token)
+    "o4-mini": (1.10e-6, 4.40e-6, 0.275e-6),
+    "o3": (2.00e-6, 8.00e-6, 0.50e-6),
+    "gpt-4.1": (2.00e-6, 8.00e-6, 0.50e-6),
+}
+_CODEX_DEFAULT_PRICING = _CODEX_PRICING["o4-mini"]
+
+
+def _estimate_codex_cost(usage: dict, model: str = "") -> float:
+    """Estimate USD cost from Codex token usage and model name."""
+    inp = usage.get("input_tokens", 0)
+    out = usage.get("output_tokens", 0)
+    cached = usage.get("cached_input_tokens", 0)
+
+    # Look up pricing by model name (strip provider prefixes like "openai/")
+    short = model.rsplit("/", 1)[-1] if model else ""
+    price_in, price_out, price_cached = _CODEX_PRICING.get(
+        short, _CODEX_DEFAULT_PRICING
+    )
+
+    # Cached tokens replace regular input tokens in cost
+    regular_in = max(inp - cached, 0)
+    return regular_in * price_in + out * price_out + cached * price_cached
+
 
 def _summarize_tool_input(name: str, inp: dict) -> str:
     """Create a short summary of tool input for display."""

@@ -26,6 +26,7 @@ import argparse
 import sys
 
 from agentstream import __version__
+from agentstream.config import load_config
 
 
 def main() -> None:
@@ -97,6 +98,9 @@ keyboard:
 
     args = parser.parse_args()
 
+    # Load config file (defaults if missing/unparseable)
+    cfg = load_config()
+
     sources: list[tuple[str, object]] = []
 
     if args.watch:
@@ -128,10 +132,22 @@ keyboard:
 
     try:
         from agentstream.app import AgentStreamApp
-        bell = args.bell and not args.no_bell
-        save_history = not args.no_history
+        from agentstream import streams as _streams
+
+        # CLI args override config file, config overrides defaults
+        bell = (args.bell and not args.no_bell) or (
+            not args.bell and not args.no_bell and cfg.notifications.bell
+        )
+        save_history = not args.no_history and cfg.history.enabled
+        max_content = args.max_content if args.max_content != 200 else cfg.display.max_content
+
+        # Apply watch config to streams module
+        _streams._SCAN_INTERVAL = cfg.watch.scan_interval
+        _streams._SESSION_MAX_AGE = cfg.watch.session_max_age
+        _streams._TAIL_IDLE_TIMEOUT = cfg.watch.idle_timeout
+
         app = AgentStreamApp(
-            sources=sources, max_content=args.max_content,
+            sources=sources, max_content=max_content,
             bell=bell, save_history=save_history,
         )
         app.run()
