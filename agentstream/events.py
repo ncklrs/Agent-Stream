@@ -9,6 +9,7 @@ from typing import Optional
 class Agent(str, Enum):
     CLAUDE = "claude"
     CODEX = "codex"
+    AIDER = "aider"
     SYSTEM = "system"
 
 
@@ -47,6 +48,11 @@ class ActionType(str, Enum):
     MCP_TOOL = "mcp_tool"
     WEB_SEARCH = "search"
 
+    # Aider
+    EDIT_APPLIED = "edit"
+    COMMIT = "commit"
+    LINT_FIX = "lint_fix"
+
     # Meta
     UNKNOWN = "unknown"
 
@@ -65,6 +71,7 @@ FILTER_MODE_ACTIONS: dict[FilterMode, frozenset[ActionType]] = {
     FilterMode.TOOLS: frozenset({
         ActionType.TOOL_USE, ActionType.TOOL_RESULT, ActionType.COMMAND,
         ActionType.FILE_CHANGE, ActionType.MCP_TOOL, ActionType.WEB_SEARCH,
+        ActionType.EDIT_APPLIED, ActionType.COMMIT, ActionType.LINT_FIX,
         ActionType.ERROR, ActionType.INIT, ActionType.RESULT,
         ActionType.STREAM_START, ActionType.STREAM_END,
     }),

@@ -872,6 +872,192 @@ class CodexInteractiveParser(BaseParser):
 
 
 # ---------------------------------------------------------------------------
+# Aider chat history parser (~/.aider.chat.history.md or .aider.chat.history.md)
+# ---------------------------------------------------------------------------
+
+class AiderChatHistoryParser(BaseParser):
+    """Parse Aider's chat history markdown files.
+
+    For: tailing .aider.chat.history.md (appended in real-time during sessions)
+    Format: Markdown with #### headers for roles and > quoted content blocks.
+
+    Lines of interest:
+    - ``# aider chat started at <timestamp>`` — session start
+    - ``#### <role>`` — role header (user, assistant, system, etc.)
+    - ``> <content>`` — user message in quoted blocks
+    - Regular text — assistant response
+    - Fenced code blocks with file paths — edits
+    """
+
+    def __init__(self) -> None:
+        self._session_id: str = ""
+        self._current_role: str = ""
+        self._in_code_block: bool = False
+        self._code_fence_file: str = ""
+
+    def parse_line(self, line: str) -> Optional[AgentEvent]:
+        raw = line.rstrip("\r\n")
+
+        # Session start: # aider chat started at 2025-01-15 10:30:00
+        if raw.startswith("# aider chat started at "):
+            ts = raw[24:].strip()
+            self._session_id = f"aider-{ts.replace(' ', '-').replace(':', '')}"
+            return AgentEvent(
+                Agent.AIDER, ActionType.INIT,
+                f"Aider session started ({ts})", session_id=self._session_id,
+            )
+
+        # Role header: #### user, #### assistant, #### system
+        if raw.startswith("#### "):
+            self._current_role = raw[5:].strip().lower()
+            # Don't emit an event for the header itself
+            return None
+
+        # Skip empty lines
+        stripped = raw.strip()
+        if not stripped:
+            return None
+
+        # Code fence tracking
+        if stripped.startswith("```"):
+            if not self._in_code_block:
+                self._in_code_block = True
+                # Extract filename from fence (e.g. ```python path/to/file.py)
+                parts = stripped[3:].strip().split()
+                self._code_fence_file = parts[-1] if len(parts) >= 1 else ""
+                if self._code_fence_file and "/" in self._code_fence_file:
+                    return AgentEvent(
+                        Agent.AIDER, ActionType.EDIT_APPLIED,
+                        f"Editing {self._code_fence_file}",
+                        session_id=self._session_id,
+                    )
+                return None
+            else:
+                self._in_code_block = False
+                self._code_fence_file = ""
+                return None
+
+        # Inside code block — skip individual lines
+        if self._in_code_block:
+            return None
+
+        # User message (quoted with >)
+        if raw.startswith("> ") and self._current_role in ("user", ""):
+            content = raw[2:].strip()
+            if content:
+                return AgentEvent(
+                    Agent.AIDER, ActionType.USER_PROMPT,
+                    content[:200], session_id=self._session_id,
+                )
+            return None
+
+        # Commit messages: Commit <hash> <message>
+        if stripped.startswith("Commit ") and len(stripped) > 10:
+            return AgentEvent(
+                Agent.AIDER, ActionType.COMMIT,
+                stripped[:200], session_id=self._session_id,
+            )
+
+        # Applied edit markers
+        if stripped.startswith("Applied edit to "):
+            return AgentEvent(
+                Agent.AIDER, ActionType.EDIT_APPLIED,
+                stripped[:200], session_id=self._session_id,
+            )
+
+        # Lint/test results
+        if stripped.startswith("Linter") or stripped.startswith("Running linter"):
+            return AgentEvent(
+                Agent.AIDER, ActionType.LINT_FIX,
+                stripped[:200], session_id=self._session_id,
+            )
+
+        # Cost/token tracking
+        if stripped.startswith("Tokens:") or stripped.startswith("Cost:"):
+            return AgentEvent(
+                Agent.AIDER, ActionType.RESULT,
+                stripped[:200], session_id=self._session_id,
+            )
+
+        # Assistant text (non-quoted, non-code-block)
+        if self._current_role == "assistant":
+            return AgentEvent(
+                Agent.AIDER, ActionType.TEXT_DELTA,
+                stripped[:400], session_id=self._session_id,
+            )
+
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Aider JSONL input/output history parser
+# ---------------------------------------------------------------------------
+
+class AiderLLMHistoryParser(BaseParser):
+    """Parse Aider's .aider.llm.history JSONL files.
+
+    Each entry is a JSON object with role/content messages and metadata.
+    """
+
+    def __init__(self) -> None:
+        self._session_id: str = "aider-llm"
+
+    def parse_line(self, line: str) -> Optional[AgentEvent]:
+        line = line.strip()
+        if not line:
+            return None
+
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return None  # Skip non-JSON lines (markdown headers etc.)
+
+        # LLM history entries have "role" and "content" fields
+        role = data.get("role", "")
+        content = data.get("content", "")
+        model = data.get("model", "")
+
+        if role == "system":
+            return AgentEvent(
+                Agent.AIDER, ActionType.INIT,
+                f"Model: {model}" if model else "System prompt",
+                session_id=self._session_id,
+            )
+        elif role == "user":
+            return AgentEvent(
+                Agent.AIDER, ActionType.USER_PROMPT,
+                str(content)[:200], session_id=self._session_id,
+            )
+        elif role == "assistant":
+            return AgentEvent(
+                Agent.AIDER, ActionType.TEXT_DELTA,
+                str(content)[:400], session_id=self._session_id,
+            )
+
+        # Token usage / cost metadata
+        usage = data.get("usage", {})
+        if usage:
+            inp = usage.get("prompt_tokens", 0)
+            out = usage.get("completion_tokens", 0)
+            cost = data.get("cost", 0)
+            parts = []
+            if inp:
+                parts.append(f"{inp:,} in")
+            if out:
+                parts.append(f"{out:,} out")
+            if cost:
+                parts.append(f"${cost:.4f}")
+            if parts:
+                return AgentEvent(
+                    Agent.AIDER, ActionType.RESULT,
+                    " / ".join(parts), session_id=self._session_id,
+                    metadata={"total_cost_usd": cost, "usage": usage},
+                )
+
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Auto-detect parser
 # ---------------------------------------------------------------------------
 
@@ -1046,5 +1232,9 @@ def create_parser(agent_type: str) -> BaseParser:
         return CodexJSONLParser()
     elif agent_type == "codex-interactive":
         return CodexInteractiveParser()
+    elif agent_type == "aider":
+        return AiderChatHistoryParser()
+    elif agent_type == "aider-llm":
+        return AiderLLMHistoryParser()
     else:
         return AutoDetectParser()

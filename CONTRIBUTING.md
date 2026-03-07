@@ -13,7 +13,7 @@ uv pip install -e ".[dev]"
 | File | Purpose |
 |------|---------|
 | `agentstream/app.py` | Textual TUI app, event handling, UI widgets |
-| `agentstream/parsers.py` | Format parsers (Claude CLI, Codex CLI, Claude SSE, interactive sessions) |
+| `agentstream/parsers.py` | Format parsers (Claude CLI, Codex CLI, Claude SSE, Aider, interactive sessions) |
 | `agentstream/events.py` | Event model (`Agent`, `ActionType`, `AgentEvent` dataclasses) |
 | `agentstream/streams.py` | Stream sources (stdin, file, exec, watch, demo) |
 | `agentstream/theme.py` | Colors, icons, rendering |

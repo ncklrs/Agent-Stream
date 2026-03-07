@@ -24,6 +24,8 @@ CLAUDE_PRIMARY = "#a78bfa"      # Violet
 CLAUDE_DIM = "#7c6bc4"
 CODEX_PRIMARY = "#4ade80"       # Green
 CODEX_DIM = "#34a65d"
+AIDER_PRIMARY = "#f472b6"      # Pink
+AIDER_DIM = "#db2777"
 SYSTEM_PRIMARY = "#64748b"      # Slate
 SYSTEM_DIM = "#475569"
 ACCENT = "#818cf8"              # Indigo (UI chrome)
@@ -37,6 +39,7 @@ SEARCH_HIGHLIGHT = "#fbbf24"    # Yellow for search matches
 AGENT_COLORS: dict[Agent, tuple[str, str]] = {
     Agent.CLAUDE: (CLAUDE_PRIMARY, CLAUDE_DIM),
     Agent.CODEX: (CODEX_PRIMARY, CODEX_DIM),
+    Agent.AIDER: (AIDER_PRIMARY, AIDER_DIM),
     Agent.SYSTEM: (SYSTEM_PRIMARY, SYSTEM_DIM),
 }
 
@@ -76,6 +79,9 @@ ACTION_STYLE: dict[ActionType, str] = {
     ActionType.COMPACT: "#64748b",
     ActionType.TASK_UPDATE: "#94a3b8",
     ActionType.USER_PROMPT: "#60a5fa",
+    ActionType.EDIT_APPLIED: "#22d3ee",
+    ActionType.COMMIT: "#34d399",
+    ActionType.LINT_FIX: "#fbbf24",
     ActionType.STREAM_START: "#64748b",
     ActionType.STREAM_END: "#64748b",
 }
@@ -110,6 +116,9 @@ ACTION_ICONS: dict[ActionType, str] = {
     ActionType.COMPACT: "..",
     ActionType.TASK_UPDATE: ">>",
     ActionType.USER_PROMPT: "U>",
+    ActionType.EDIT_APPLIED: "+-",
+    ActionType.COMMIT: "GC",
+    ActionType.LINT_FIX: "LF",
     ActionType.PING: "..",
     ActionType.UNKNOWN: "  ",
 }
@@ -325,13 +334,14 @@ def render_logo() -> list[Text]:
 # ---------------------------------------------------------------------------
 
 HELP_CONTENT = """\
-[bold #818cf8]AgentStream[/] [dim]v1.3.0[/]
+[bold #818cf8]AgentStream[/] [dim]v1.4.0[/]
 
 [bold]Keyboard[/]
 [bold #818cf8]space[/]  [#94a3b8]Pause / Resume (buffers events)[/]
 [bold #818cf8]    s[/]  [#94a3b8]Toggle sidebar (stream list)[/]
 [bold #818cf8]    1[/]  [#94a3b8]Toggle Claude events on/off[/]
 [bold #818cf8]    2[/]  [#94a3b8]Toggle Codex events on/off[/]
+[bold #818cf8]    3[/]  [#94a3b8]Toggle Aider events on/off[/]
 [bold #818cf8]    f[/]  [#94a3b8]Cycle filter: All → Tools → Errors → Text[/]
 [bold #818cf8]    /[/]  [#94a3b8]Search events (Esc to clear)[/]
 [bold #818cf8]    d[/]  [#94a3b8]Detail view (full event content)[/]

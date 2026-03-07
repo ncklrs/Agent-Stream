@@ -5,6 +5,8 @@ defaults when the file is missing, unreadable, or contains parse errors.
 
 Python 3.11+ uses the stdlib ``tomllib``; on older versions the file is
 silently skipped (defaults apply) to avoid adding a third-party dependency.
+
+Supports Claude Code, OpenAI Codex, and Aider agents.
 """
 
 from __future__ import annotations

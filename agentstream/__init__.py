@@ -1,3 +1,3 @@
-"""AgentStream - TUI for streaming Claude and Codex agent events."""
+"""AgentStream - TUI for streaming Claude, Codex, and Aider agent events."""
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"

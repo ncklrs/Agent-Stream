@@ -32,7 +32,7 @@ from agentstream.config import load_config
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="agentstream",
-        description="Stream and visualize Claude and Codex agent events in a TUI",
+        description="Stream and visualize Claude, Codex, and Aider agent events in a TUI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
@@ -45,7 +45,7 @@ examples:
   agentstream --file codex /path/to/session.jsonl         Watch log file
 
 keyboard:
-  space  Pause/Resume    s    Toggle sidebar    1/2  Filter agents
+  space  Pause/Resume    s    Toggle sidebar    1/2/3 Filter agents
   f      Cycle filter    /    Search events     d    Event detail
   b      Bookmark        n    Next bookmark     t    Timestamps
   e      Export events   c    Clear log         ?    Help    q  Quit
@@ -61,16 +61,16 @@ keyboard:
         help="Run with simulated demo data",
     )
     parser.add_argument(
-        "--stdin", choices=["claude", "codex", "auto"],
+        "--stdin", choices=["claude", "codex", "aider", "auto"],
         help="Read stream from stdin (specify agent format or auto-detect)",
     )
     parser.add_argument(
         "--file", nargs=2, action="append", metavar=("AGENT", "PATH"),
-        help="Watch a JSONL/SSE file. AGENT is claude|codex|auto",
+        help="Watch a JSONL/SSE/history file. AGENT is claude|codex|aider|auto",
     )
     parser.add_argument(
         "--exec", nargs=2, action="append", metavar=("AGENT", "CMD"),
-        help="Run a command and stream its JSON output. AGENT is claude|codex|auto",
+        help="Run a command and stream its JSON output. AGENT is claude|codex|aider|auto",
     )
     parser.add_argument(
         "--replay", metavar="PATH",

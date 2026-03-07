@@ -162,8 +162,9 @@ agentstream --no-history         # Disable auto-saving to ~/.agentstream/history
 
 - **Claude Code** — CLI and interactive sessions
 - **OpenAI Codex CLI** — CLI and interactive sessions
+- **Aider** — chat history and LLM history streaming
 - **Claude API** — raw SSE streaming
-- **More coming soon** — Cursor, Aider, Windsurf
+- **More coming soon** — Cursor, Windsurf
 
 ## License
 

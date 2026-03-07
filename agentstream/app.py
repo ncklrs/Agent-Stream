@@ -33,6 +33,7 @@ from agentstream.theme import (
     render_event_detail, FILTER_MODE_LABELS,
     ACCENT, SYSTEM_DIM, SEPARATOR_COLOR,
     CLAUDE_PRIMARY, CLAUDE_DIM, CODEX_PRIMARY, CODEX_DIM,
+    AIDER_PRIMARY, AIDER_DIM,
     BG_DARK, BG_PANEL, BG_BAR, AGENT_COLORS, HELP_CONTENT,
     session_color, ERROR_FLASH,
 )
@@ -279,13 +280,16 @@ class Sidebar(Vertical):
         yield ScrollableContainer(id="session-container")
         yield Static("", id="sidebar-footer")
 
-    def update_footer(self, claude_cost: float, codex_cost: float, total_events: int) -> None:
+    def update_footer(self, claude_cost: float, codex_cost: float, aider_cost: float, total_events: int) -> None:
         """Update sidebar footer with cost breakdown."""
         t = Text()
         t.append(f" {'─' * 24}\n", style=f"dim {SEPARATOR_COLOR}")
-        if claude_cost > 0 or codex_cost > 0:
+        if claude_cost > 0 or codex_cost > 0 or aider_cost > 0:
             t.append(f" CL ${claude_cost:.4f}", style=f"dim {CLAUDE_DIM}")
-            t.append(f"  CX ${codex_cost:.4f}\n", style=f"dim {CODEX_DIM}")
+            t.append(f"  CX ${codex_cost:.4f}", style=f"dim {CODEX_DIM}")
+            if aider_cost > 0:
+                t.append(f"\n AI ${aider_cost:.4f}", style=f"dim {AIDER_DIM}")
+            t.append("\n", style="")
         t.append(f" {total_events:,} events", style=f"dim {SYSTEM_DIM}")
         try:
             self.query_one("#sidebar-footer", Static).update(t)
@@ -567,7 +571,7 @@ class StatsScreen(ModalScreen[None]):
         t.append("  By Agent\n", style=f"bold {ACCENT}")
         for agent, count in agent_counts.most_common():
             pct = count / total * 100
-            color = CLAUDE_PRIMARY if agent == "claude" else (CODEX_PRIMARY if agent == "codex" else SYSTEM_DIM)
+            color = CLAUDE_PRIMARY if agent == "claude" else (CODEX_PRIMARY if agent == "codex" else (AIDER_PRIMARY if agent == "aider" else SYSTEM_DIM))
             bar_len = int(pct / 100 * 30)
             t.append(f"  {agent:8s} ", style=f"bold {color}")
             t.append("█" * bar_len, style=color)
@@ -655,8 +659,10 @@ class StatusBar(Static):
     event_count = reactive(0)
     claude_count = reactive(0)
     codex_count = reactive(0)
+    aider_count = reactive(0)
     show_claude = reactive(True)
     show_codex = reactive(True)
+    show_aider = reactive(True)
     total_cost = reactive(0.0)
     buffered_count = reactive(0)
     error_count = reactive(0)
@@ -688,6 +694,10 @@ class StatusBar(Static):
         bar.append(" ", style="")
         cx_style = f"bold {CODEX_PRIMARY}" if self.show_codex else f"dim {CODEX_DIM}"
         bar.append(f"CX:{self.codex_count}", style=cx_style)
+        if self.aider_count > 0 or not self.show_aider:
+            bar.append(" ", style="")
+            ai_style = f"bold {AIDER_PRIMARY}" if self.show_aider else f"dim {AIDER_DIM}"
+            bar.append(f"AI:{self.aider_count}", style=ai_style)
 
         # Error count
         if self.error_count > 0:
@@ -776,6 +786,7 @@ class AgentStreamApp(App):
         Binding("s", "toggle_sidebar", "Sidebar", show=False),
         Binding("1", "toggle_claude", "Claude", show=False),
         Binding("2", "toggle_codex", "Codex", show=False),
+        Binding("3", "toggle_aider", "Aider", show=False),
         Binding("question_mark", "show_help", "Help", show=False),
         Binding("f", "cycle_filter", "Filter", show=False),
         Binding("slash", "open_search", "Search", show=False),
@@ -791,6 +802,7 @@ class AgentStreamApp(App):
     event_count = reactive(0)
     show_claude = reactive(True)
     show_codex = reactive(True)
+    show_aider = reactive(True)
     filter_mode = reactive(FilterMode.ALL)
     search_term = reactive("")
     relative_time = reactive(False)
@@ -811,8 +823,10 @@ class AgentStreamApp(App):
         self._sessions: dict[str, SessionInfo] = {}
         self._claude_count = 0
         self._codex_count = 0
+        self._aider_count = 0
         self._claude_cost = 0.0
         self._codex_cost = 0.0
+        self._aider_cost = 0.0
         self._total_cost = 0.0
         self._error_count = 0
         self._last_action: ActionType | None = None
@@ -923,6 +937,8 @@ class AgentStreamApp(App):
             self._claude_count += 1
         elif event.agent == Agent.CODEX:
             self._codex_count += 1
+        elif event.agent == Agent.AIDER:
+            self._aider_count += 1
 
         # Track errors
         if event.action in (ActionType.ERROR, ActionType.TURN_FAILED):
@@ -965,6 +981,8 @@ class AgentStreamApp(App):
                     self._claude_cost += cost
                 elif event.agent == Agent.CODEX:
                     self._codex_cost += cost
+                elif event.agent == Agent.AIDER:
+                    self._aider_cost += cost
 
         # Tool call pairing: track tool_use starts, annotate tool_results
         self._pair_tool_events(event)
@@ -1051,6 +1069,8 @@ class AgentStreamApp(App):
                     self._claude_count += 1
                 elif agent == Agent.CODEX:
                     self._codex_count += 1
+                elif agent == Agent.AIDER:
+                    self._aider_count += 1
                 # Register session if needed
                 if sid and sid not in self._sessions:
                     self._register_session(coalesced)
@@ -1075,6 +1095,8 @@ class AgentStreamApp(App):
         if event.agent == Agent.CLAUDE and not self.show_claude:
             return False
         if event.agent == Agent.CODEX and not self.show_codex:
+            return False
+        if event.agent == Agent.AIDER and not self.show_aider:
             return False
 
         # Session-level filter (sidebar toggles)
@@ -1180,8 +1202,10 @@ class AgentStreamApp(App):
             status.event_count = self.event_count
             status.claude_count = self._claude_count
             status.codex_count = self._codex_count
+            status.aider_count = self._aider_count
             status.show_claude = self.show_claude
             status.show_codex = self.show_codex
+            status.show_aider = self.show_aider
             status.total_cost = self._total_cost
             status.buffered_count = len(self._pause_buffer)
             status.error_count = self._error_count
@@ -1195,7 +1219,8 @@ class AgentStreamApp(App):
         # Update sidebar cost footer
         try:
             self.query_one(Sidebar).update_footer(
-                self._claude_cost, self._codex_cost, len(self._all_events),
+                self._claude_cost, self._codex_cost, self._aider_cost,
+                len(self._all_events),
             )
         except Exception:
             pass
@@ -1354,9 +1379,11 @@ class AgentStreamApp(App):
         self.event_count = 0
         self._claude_count = 0
         self._codex_count = 0
+        self._aider_count = 0
         self._total_cost = 0.0
         self._claude_cost = 0.0
         self._codex_cost = 0.0
+        self._aider_cost = 0.0
         self._error_count = 0
         self._last_action = None
         self._pause_buffer.clear()
@@ -1386,6 +1413,14 @@ class AgentStreamApp(App):
             if toggle.agent == Agent.CODEX:
                 toggle.enabled = self.show_codex
                 self._sessions[toggle.session_id].visible = self.show_codex
+        self._update_status()
+
+    def action_toggle_aider(self) -> None:
+        self.show_aider = not self.show_aider
+        for toggle in self.query_one(Sidebar).query(SessionToggle):
+            if toggle.agent == Agent.AIDER:
+                toggle.enabled = self.show_aider
+                self._sessions[toggle.session_id].visible = self.show_aider
         self._update_status()
 
     def action_show_help(self) -> None:

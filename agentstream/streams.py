@@ -81,6 +81,16 @@ DEMO_SCRIPT: list[tuple[float, Agent, ActionType, str, str]] = [
     (0.3, Agent.CLAUDE, ActionType.TEXT_DELTA, "- Redis-backed sessions (session.py)", "c"),
     (0.4, Agent.CLAUDE, ActionType.MESSAGE_STOP, "end_turn | 312 tokens", "c"),
 
+    # --- Aider session starts ---
+    (0.7, Agent.AIDER, ActionType.INIT, "Aider session started (2026-03-07 12:30:00)", "a"),
+    (0.5, Agent.AIDER, ActionType.USER_PROMPT, "Add rate limiting to the auth endpoints", "a"),
+    (0.6, Agent.AIDER, ActionType.TEXT_DELTA, "I'll add rate limiting middleware to the auth endpoints.", "a"),
+    (0.4, Agent.AIDER, ActionType.TEXT_DELTA, "Using a token bucket algorithm with Redis backing.", "a"),
+    (0.5, Agent.AIDER, ActionType.EDIT_APPLIED, "Applied edit to src/auth/middleware.py", "a"),
+    (0.4, Agent.AIDER, ActionType.EDIT_APPLIED, "Applied edit to src/auth/handler.py", "a"),
+    (0.5, Agent.AIDER, ActionType.LINT_FIX, "Linter passed after fixes", "a"),
+    (0.6, Agent.AIDER, ActionType.COMMIT, "Commit a3f7b21 feat: add rate limiting to auth endpoints", "a"),
+
     # --- Codex web search + MCP ---
     (0.6, Agent.CODEX, ActionType.TURN_START, "New turn", "x"),
     (0.5, Agent.CODEX, ActionType.WEB_SEARCH, "redis session best practices python", "x"),
@@ -89,12 +99,20 @@ DEMO_SCRIPT: list[tuple[float, Agent, ActionType, str, str]] = [
     (0.4, Agent.CODEX, ActionType.FILE_CHANGE, "~src/auth/session.py (+12, -3)", "x"),
     (0.3, Agent.CODEX, ActionType.TURN_COMPLETE, "3,412 in / 287 out", "x"),
 
+    # --- Aider continues ---
+    (0.5, Agent.AIDER, ActionType.USER_PROMPT, "Add tests for the rate limiter", "a"),
+    (0.6, Agent.AIDER, ActionType.TEXT_DELTA, "I'll create comprehensive tests for the rate limiting middleware.", "a"),
+    (0.5, Agent.AIDER, ActionType.EDIT_APPLIED, "Applied edit to tests/test_rate_limit.py", "a"),
+    (0.4, Agent.AIDER, ActionType.COMMIT, "Commit b8e2c45 test: add rate limiter tests", "a"),
+    (0.5, Agent.AIDER, ActionType.RESULT, "Tokens: 8,421 sent, 1,203 received. Cost: $0.0187", "a"),
+
     # --- Claude final result ---
     (0.6, Agent.CLAUDE, ActionType.RESULT, "3 turns | $0.0342 | 14.2s | 12,847+1,203 tok", "c"),
 ]
 
 DEMO_CLAUDE_SESSION = "demo-cl-a1b2c3d4"
 DEMO_CODEX_SESSION = "demo-cx-e5f6a7b8"
+DEMO_AIDER_SESSION = "demo-ai-c9d0e1f2"
 
 
 async def demo_stream() -> AsyncGenerator[AgentEvent, None]:
@@ -102,7 +120,7 @@ async def demo_stream() -> AsyncGenerator[AgentEvent, None]:
     yield AgentEvent(Agent.SYSTEM, ActionType.STREAM_START,
                      "Demo mode - streaming simulated events")
 
-    session_map = {"c": DEMO_CLAUDE_SESSION, "x": DEMO_CODEX_SESSION, "s": ""}
+    session_map = {"c": DEMO_CLAUDE_SESSION, "x": DEMO_CODEX_SESSION, "a": DEMO_AIDER_SESSION, "s": ""}
 
     while True:
         for delay, agent, action, content, key in DEMO_SCRIPT:
@@ -247,7 +265,7 @@ _TAIL_IDLE_TIMEOUT = 600.0 # 10 min — stop tailing after no new data
 
 
 def _discover_sessions() -> list[tuple[pathlib.Path, str]]:
-    """Find active JSONL session files for Claude and Codex.
+    """Find active session files for Claude, Codex, and Aider.
 
     Returns (path, parser_type) tuples.
     """
@@ -277,6 +295,25 @@ def _discover_sessions() -> list[tuple[pathlib.Path, str]]:
             except OSError:
                 continue
 
+    # Aider: look for .aider.chat.history.md in common working directories
+    # Aider writes to .aider.chat.history.md in the project's working directory.
+    # We scan the home dir's direct children and the cwd for active history files.
+    _aider_candidates: list[pathlib.Path] = []
+    cwd = pathlib.Path.cwd()
+    _aider_candidates.append(cwd / ".aider.chat.history.md")
+    # Also check parent dir (common monorepo pattern)
+    if cwd.parent != cwd:
+        _aider_candidates.append(cwd.parent / ".aider.chat.history.md")
+    # Check home directory
+    _aider_candidates.append(pathlib.Path.home() / ".aider.chat.history.md")
+
+    for f in _aider_candidates:
+        try:
+            if f.is_file() and f.stat().st_mtime >= cutoff:
+                found.append((f, "aider"))
+        except OSError:
+            continue
+
     return found
 
 
@@ -285,7 +322,12 @@ def _extract_project_name(session_path: pathlib.Path) -> str:
 
     Claude: project dir like `-Users-nick-Dev-Agent-Stream` → last segment.
     Codex: path like ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl → filename stem.
+    Aider: parent directory name (the project root).
     """
+    # Aider session: use parent directory name
+    if session_path.name == ".aider.chat.history.md":
+        return session_path.parent.name
+
     # Codex session: use filename stem (e.g. "rollout-2026-02-27T12-30-16-...")
     if ".codex" in session_path.parts:
         return session_path.stem[:20]
